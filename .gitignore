@@ -9,3 +9,6 @@ int/
 
 # no one cares about da cpp files :(
 *.cpp
+
+# unit tests (should probably include this in the project later on)
+tests.h

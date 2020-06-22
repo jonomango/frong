@@ -22,6 +22,6 @@
 #define FRONG_ASSERT(x) assert(x)
 
 // pretty print debug messages
-#define FRONG_DEBUG_MSG(format, ...) FRONG_DEBUG_RAW("[frg-msg]: " format "\n", __VA_ARGS__)
-#define FRONG_DEBUG_ERROR(format, ...) FRONG_DEBUG_RAW("[frg-error]: " format "\n", __VA_ARGS__)
-#define FRONG_DEBUG_WARNING(format, ...) FRONG_DEBUG_RAW("[frg-warning]: " format "\n", __VA_ARGS__)
+#define FRONG_DEBUG_MSG(format, ...) FRONG_DEBUG_RAW("[frong-msg]: " format "\n", __VA_ARGS__)
+#define FRONG_DEBUG_ERROR(format, ...) FRONG_DEBUG_RAW("[frong-error]: " format "\n", __VA_ARGS__)
+#define FRONG_DEBUG_WARNING(format, ...) FRONG_DEBUG_RAW("[frong-warning]: " format "\n", __VA_ARGS__)
