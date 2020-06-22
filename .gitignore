@@ -1,7 +1,11 @@
-
 # visual studio files
-tests/.vs/
+.vs/
+*.sln
+*.vcxproj*
 
 # output
-tests/bin/
-tests/int/
+bin/
+int/
+
+# no one cares about the main.cpp :(
+main.cpp
