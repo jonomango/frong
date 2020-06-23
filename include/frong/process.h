@@ -1,8 +1,8 @@
 #pragma once
 
 #include "debug.h"
+#include "nt.h"
 
-#include <Windows.h>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -53,6 +53,14 @@ public:
   // get the process's pid
   uint32_t pid() const noexcept;
 
+  // get the address of the peb
+  template <size_t PtrSize>
+  void* peb_addr() const noexcept;
+
+  // read the peb
+  template <size_t PtrSize>
+  auto peb() const;
+
   // get a list of loaded modules
   template <typename OutIt>
   size_t modules(OutIt dest) const;
@@ -75,6 +83,11 @@ private:
   // the process id
   uint32_t pid_ = 0;
 
+  // address of the native peb 
+  // eg. 64bit peb if called from a 64bit process
+  //     32bit peb if called from a 32bit process
+  void* peb_address_ = nullptr;
+
   // should we close the handle ourselves?
   bool close_handle_ = false;
 
@@ -92,6 +105,28 @@ private:
   // cache some stuff
   void initialize();
 };
+
+// get the pids that have the target process name
+template <typename OutIt>
+size_t pids_from_name(std::string_view name, OutIt dest);
+
+// returns a vector of pids
+std::vector<uint32_t> pids_from_name(std::string_view name);
+
+// get a process with it's name
+// note: an invalid process will be returned if 0 or more
+//       than 1 processes are found with a matching name
+// if force is true, it will return the first process found
+// when multiple processes match the provided name
+process process_from_name(std::string_view name, bool force = false);
+
+
+//
+//
+// implementation below
+//
+//
+
 
 // get the pids that have the target process name
 template <typename OutIt>
@@ -120,24 +155,30 @@ inline size_t pids_from_name(std::string_view const name, OutIt dest) {
   return matching;
 }
 
+// returns a vector of pids
+inline std::vector<uint32_t> pids_from_name(std::string_view const name) {
+  std::vector<uint32_t> pids;
+  pids_from_name(name, back_inserter(pids));
+  return pids;
+}
+
 // get a process with it's name
 // note: an invalid process will be returned if 0 or more
 //       than 1 processes are found with a matching name
 // if force is true, it will return the first process found
 // when multiple processes match the provided name
-inline process process_from_name(std::string_view const name, bool const force = false) {
-  std::vector<uint32_t> pids;
-  auto const count = pids_from_name(name, back_inserter(pids));
+inline process process_from_name(std::string_view const name, bool const force) {
+  auto const pids = pids_from_name(name);
   
   // process not found
-  if (!count) {
+  if (pids.empty()) {
     FRONG_DEBUG_WARNING("No processes found with the name \"%.*s\"", 
       (int)name.size(), name.data());
     return {};
   }
 
   // nore than one matching process found
-  if (count > 1 && !force) {
+  if (pids.size() > 1 && !force) {
     FRONG_DEBUG_WARNING("Multiple processes found with the name \"%.*s\"",
       (int)name.size(), name.data());
     return {};
@@ -227,6 +268,35 @@ inline uint32_t process::pid() const noexcept {
   return pid_;
 }
 
+// get the address of the peb
+template <size_t PtrSize>
+inline void* process::peb_addr() const noexcept {
+  FRONG_ASSERT(PtrSize == 4 || PtrSize == 8);
+
+  // peb_address_ is 64bit
+  if constexpr (sizeof(void*) == 8) {
+    if constexpr (PtrSize == 8)
+      return peb_address_;
+    else {
+      // only a wow64 process will have a 32bit peb
+      FRONG_ASSERT(wow64());
+      return (uint8_t*)peb_address_ + 0x1000;
+    }
+  } 
+  // peb_address_ is 32bit
+  else {
+    // currently doesn't support getting the 64bit peb from a 32bit process
+    FRONG_ASSERT(PtrSize == 4);
+    return peb_address_;
+  }
+}
+
+// read the peb
+template <size_t PtrSize>
+inline auto process::peb() const {
+  return read<nt::PEB<PtrSize>>(peb_addr<PtrSize>());
+}
+
 // get a list of loaded modules
 template <typename OutIt>
 inline size_t process::modules(OutIt dest) const {
@@ -308,6 +378,15 @@ inline void process::initialize() {
     GetNativeSystemInfo(&info);
     x64_ = (info.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64);
   }
+
+  PROCESS_BASIC_INFORMATION info{};
+
+  // get the address of the process's peb
+  if (NT_SUCCESS(nt::NtQueryInformationProcess(handle_,
+      ProcessBasicInformation, &info, sizeof(info), nullptr)))
+    peb_address_ = info.PebBaseAddress;
+  else
+    FRONG_DEBUG_WARNING("Failed to query basic process information.");
 }
 
 } // namespace frg
