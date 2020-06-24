@@ -2,10 +2,12 @@
 
 #include "debug.h"
 #include "nt.h"
+#include "module.h"
 
 #include <cstdint>
 #include <utility>
 #include <vector>
+#include <string>
 #include <string_view>
 
 // for WTS* functions
@@ -62,8 +64,19 @@ public:
   auto peb() const;
 
   // get a list of loaded modules
+  template <size_t PtrSize, typename OutIt>
+  size_t modules(OutIt dest) const;
+
+  // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
   template <typename OutIt>
   size_t modules(OutIt dest) const;
+
+  // returns an std::vector of loaded modules
+  template <size_t PtrSize>
+  std::vector<module> modules() const;
+
+  // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
+  std::vector<module> modules() const;
 
   // read/write memory (returns the number of bytes read/written)
   size_t read(void const* address, void* buffer, size_t size) const;
@@ -78,6 +91,11 @@ public:
   size_t write(void* address, T const& value) const;
 
 private:
+  // *****
+  // WARNING: any new instance variable must also be added in the move 
+  //          assignment operator or else bad things will happen!
+  // *****
+
   HANDLE handle_ = nullptr;
 
   // the process id
@@ -219,6 +237,7 @@ inline process& process::operator=(process&& other) noexcept {
   // will cleanup our (old) process instance for us :)
   std::swap(handle_,       other.handle_);
   std::swap(pid_,          other.pid_);
+  std::swap(peb_address_,  other.peb_address_);
   std::swap(close_handle_, other.close_handle_);
   std::swap(x64_,          other.x64_);
   std::swap(wow64_,        other.wow64_);
@@ -298,13 +317,74 @@ inline auto process::peb() const {
 }
 
 // get a list of loaded modules
-template <typename OutIt>
+template <size_t PtrSize, typename OutIt>
 inline size_t process::modules(OutIt dest) const {
   FRONG_ASSERT(valid());
 
-  // TODO: actually implement lol
+  using ldr_data = nt::PEB_LDR_DATA<PtrSize>;
+  using ldr_entry = nt::LDR_DATA_TABLE_ENTRY<PtrSize>;
+  using list_entry = nt::LIST_ENTRY<PtrSize>;
 
-  return 0;
+  size_t num_modules = 0;
+
+  // the address of PEB::Ldr::InMemoryOrderModuleList
+  auto const list_head = peb<PtrSize>().Ldr + 
+    offsetof(ldr_data, InMemoryOrderModuleList);
+
+  // first entry
+  auto current = read<list_entry>(cast_ptr(list_head)).Flink;
+
+  // iterate over the linked list
+  while (current != list_head) {
+    // basically just CONTAINING_RECORD(current, ldr_entry, InMemoryOrderLinks)
+    auto const entry = read<ldr_entry>(cast_ptr(
+      current - offsetof(ldr_entry, InMemoryOrderLinks)));
+
+    // create a std::wstring object big enough to hold the dll name
+    std::wstring fullpath(entry.FullDllName.Length / 2, L' ');
+
+    // read the full dll path
+    auto const bytes_read = read(
+        cast_ptr(entry.FullDllName.Buffer), 
+        fullpath.data(),
+        entry.FullDllName.Length);
+
+    // error reading memory
+    if (bytes_read != entry.FullDllName.Length) {
+      FRONG_DEBUG_WARNING("Failed to read module's FullDllName.");
+      continue;
+    }
+
+    // add this module
+    (num_modules++, dest++) = module{
+      std::move(fullpath),
+      cast_ptr(entry.DllBase)
+    };
+
+    // go to the next node
+    current = read<list_entry>(cast_ptr(current)).Flink;
+  }
+
+  return num_modules;
+}
+
+// calls modules() with PtrSize set to 4 if x86() or 8 if x64()
+template <typename OutIt>
+inline size_t process::modules(OutIt dest) const {
+  return x64() ? modules<8>(dest) : modules<4>(dest);
+}
+
+// returns an std::vector of loaded modules
+template <size_t PtrSize>
+inline std::vector<module> process::modules() const {
+  std::vector<module> m;
+  modules(back_inserter(m));
+  return m;
+}
+
+// calls modules() with PtrSize set to 4 if x86() or 8 if x64()
+inline std::vector<module> process::modules() const {
+  return x64() ? modules<8>() : modules<4>();
 }
 
 // read/write memory (returns the number of bytes read/written)
@@ -359,6 +439,7 @@ inline size_t process::write(void* address, T const& value) const {
 // cache some stuff
 inline void process::initialize() {
   FRONG_ASSERT(valid());
+  FRONG_ASSERT(sizeof(void*) == 8 || !x64());
 
   pid_ = GetProcessId(handle_);
 
