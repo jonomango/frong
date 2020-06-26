@@ -107,7 +107,7 @@ static constexpr bool valid_scan_container = std::is_same_v<
 
   // look for da value
 template <typename T>
-bool simple_compare<T>::operator()(void* address, void* const buffer, size_t const size) const {
+inline bool simple_compare<T>::operator()(void* address, void* const buffer, size_t const size) const {
   if constexpr (alignof(T) != 1)
     // make sure address is aligned correctly
     if ((uintptr_t)address & (alignof(T) - 1))

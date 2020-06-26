@@ -185,7 +185,7 @@ inline size_t pids_from_name(std::string_view const name, OutIt dest) {
 
   for (size_t i = 0; i < count; ++i) {
     // names dont match, continue!
-    if (0 != strncmp(processes[i].pProcessName, name.data(), name.size()))
+    if (!name.empty() && 0 != strncmp(processes[i].pProcessName, name.data(), name.size()))
       continue;
 
     (matching++, dest++) = processes[i].ProcessId;
