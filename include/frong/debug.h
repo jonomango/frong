@@ -12,8 +12,8 @@
 #else
 
 // do nothing looool
-#define FRONG_DEBUG_RAW(format, ...)
-#define FRONG_DEBUG_ASSERT(condition)
+#define FRONG_DEBUG_RAW(format, ...) ((void)0)
+#define FRONG_DEBUG_ASSERT(condition) ((void)0)
 
 #endif
 

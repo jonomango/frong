@@ -2,13 +2,13 @@
 
 #include "debug.h"
 #include "nt.h"
-#include "module.h"
 
 #include <cstdint>
 #include <utility>
 #include <vector>
 #include <string>
 #include <string_view>
+#include <optional>
 
 // for WTS* functions
 #include <WtsApi32.h>
@@ -16,6 +16,17 @@
 
 
 namespace frg {
+
+using module_base = void*;
+
+// represents a module loaded in memory
+struct module {
+  // full path to the DLL
+  std::wstring path;
+
+  // base address of the image in memory
+  module_base base = nullptr;
+};
 
 // wrapper over a process handle
 class process {
@@ -63,6 +74,13 @@ public:
   template <size_t PtrSize>
   auto peb() const;
 
+  // get a single module
+  template <size_t PtrSize>
+  std::optional<frg::module> module(std::wstring_view name) const;
+
+  // calls module() with PtrSize set to 4 if x86() or 8 if x64()
+  std::optional<frg::module> module(std::wstring_view name) const;
+
   // get a list of loaded modules
   template <size_t PtrSize, typename OutIt>
   size_t modules(OutIt dest) const;
@@ -73,10 +91,10 @@ public:
 
   // returns an std::vector of loaded modules
   template <size_t PtrSize>
-  std::vector<module> modules() const;
+  std::vector<frg::module> modules() const;
 
   // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
-  std::vector<module> modules() const;
+  std::vector<frg::module> modules() const;
 
   // read/write memory (returns the number of bytes read/written)
   size_t read(void const* address, void* buffer, size_t size) const;
@@ -122,6 +140,10 @@ private:
 
   // cache some stuff
   void initialize();
+
+  // call callback() for every module loaded
+  template <size_t PtrSize, typename Callback>
+  void iterate_modules(Callback&& callback) const;
 };
 
 // get the pids that have the target process name
@@ -316,56 +338,63 @@ inline auto process::peb() const {
   return read<nt::PEB<PtrSize>>(peb_addr<PtrSize>());
 }
 
+// get a single module
+template <size_t PtrSize>
+inline std::optional<frg::module> process::module(std::wstring_view const name) const {
+  // bruh -_-
+  if (name.empty())
+    return {};
+
+  struct {
+    std::wstring_view const name;
+    std::optional<frg::module> found;
+
+    // search for a matching module
+    bool operator()(frg::module&& m) {
+      // not big enough
+      if (m.path.size() < name.size())
+        return true;
+
+      // cut off the beginning part
+      auto const n = m.path.c_str() + (m.path.size() - name.size());
+
+      // does the name match?
+      if (0 == _wcsnicmp(n, name.data(), name.size())) {
+        found = m;
+        return false;
+      }
+
+      return true;
+    }
+  } callback{ name };
+
+  iterate_modules<PtrSize>(callback);
+  return callback.found;
+}
+
+// calls module() with PtrSize set to 4 if x86() or 8 if x64()
+inline std::optional<frg::module> process::module(std::wstring_view const name) const {
+  return x64() ? module<8>(name) : module<4>(name);
+}
+
 // get a list of loaded modules
 template <size_t PtrSize, typename OutIt>
 inline size_t process::modules(OutIt dest) const {
-  FRONG_ASSERT(valid());
+  struct {
+    OutIt dest;
+    size_t count;
 
-  using ldr_data = nt::PEB_LDR_DATA<PtrSize>;
-  using ldr_entry = nt::LDR_DATA_TABLE_ENTRY<PtrSize>;
-  using list_entry = nt::LIST_ENTRY<PtrSize>;
-
-  size_t num_modules = 0;
-
-  // the address of PEB::Ldr::InMemoryOrderModuleList
-  auto const list_head = peb<PtrSize>().Ldr + 
-    offsetof(ldr_data, InMemoryOrderModuleList);
-
-  // first entry
-  auto current = read<list_entry>(cast_ptr(list_head)).Flink;
-
-  // iterate over the linked list
-  while (current != list_head) {
-    // basically just CONTAINING_RECORD(current, ldr_entry, InMemoryOrderLinks)
-    auto const entry = read<ldr_entry>(cast_ptr(
-      current - offsetof(ldr_entry, InMemoryOrderLinks)));
-
-    // create a std::wstring object big enough to hold the dll name
-    std::wstring fullpath(entry.FullDllName.Length / 2, L' ');
-
-    // read the full dll path
-    auto const bytes_read = read(
-        cast_ptr(entry.FullDllName.Buffer), 
-        fullpath.data(),
-        entry.FullDllName.Length);
-
-    // error reading memory
-    if (bytes_read != entry.FullDllName.Length) {
-      FRONG_DEBUG_WARNING("Failed to read module's FullDllName.");
-      continue;
+    // add every module
+    bool operator()(frg::module&& m) {
+      (count++, dest++) = m;
+      return true;
     }
+  } callback{ dest, 0 };
 
-    // add this module
-    (num_modules++, dest++) = module{
-      std::move(fullpath),
-      cast_ptr(entry.DllBase)
-    };
+  // iterate over every module and add it to the list
+  iterate_modules<PtrSize>(callback);
 
-    // go to the next node
-    current = read<list_entry>(cast_ptr(current)).Flink;
-  }
-
-  return num_modules;
+  return callback.count;
 }
 
 // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
@@ -376,14 +405,14 @@ inline size_t process::modules(OutIt dest) const {
 
 // returns an std::vector of loaded modules
 template <size_t PtrSize>
-inline std::vector<module> process::modules() const {
-  std::vector<module> m;
+inline std::vector<frg::module> process::modules() const {
+  std::vector<frg::module> m;
   modules(back_inserter(m));
   return m;
 }
 
 // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
-inline std::vector<module> process::modules() const {
+inline std::vector<frg::module> process::modules() const {
   return x64() ? modules<8>() : modules<4>();
 }
 
@@ -395,7 +424,8 @@ inline size_t process::read(void const* const address, void* const buffer, size_
   FRONG_ASSERT(address != nullptr);
 
   SIZE_T bytes_read = 0;
-  if (!ReadProcessMemory(handle_, address, buffer, size, &bytes_read)) {
+  if (!ReadProcessMemory(handle_, address, buffer, size, &bytes_read)
+      && GetLastError() != ERROR_PARTIAL_COPY) {
     FRONG_DEBUG_ERROR("Failed to read memory at address %p.", address);
     return 0;
   }
@@ -409,7 +439,8 @@ inline size_t process::write(void* const address, void const* const buffer, size
   FRONG_ASSERT(address != nullptr);
 
   SIZE_T bytes_written = 0;
-  if (!WriteProcessMemory(handle_, address, buffer, size, &bytes_written)) {
+  if (!WriteProcessMemory(handle_, address, buffer, size, &bytes_written)
+      && GetLastError() != ERROR_PARTIAL_COPY) {
     FRONG_DEBUG_ERROR("Failed to write memory at address %p.", address);
     return 0;
   }
@@ -468,6 +499,54 @@ inline void process::initialize() {
     peb_address_ = info.PebBaseAddress;
   else
     FRONG_DEBUG_WARNING("Failed to query basic process information.");
+}
+
+// call callback() for every module loaded
+template <size_t PtrSize, typename Callback>
+inline void process::iterate_modules(Callback&& callback) const {
+  FRONG_ASSERT(valid());
+
+  using ldr_data = nt::PEB_LDR_DATA<PtrSize>;
+  using ldr_entry = nt::LDR_DATA_TABLE_ENTRY<PtrSize>;
+  using list_entry = nt::LIST_ENTRY<PtrSize>;
+
+  // the address of PEB::Ldr::InMemoryOrderModuleList
+  auto const list_head = peb<PtrSize>().Ldr +
+    offsetof(ldr_data, InMemoryOrderModuleList);
+
+  // first entry
+  auto current = read<list_entry>(cast_ptr(list_head)).Flink;
+
+  // iterate over the linked list
+  while (current != list_head) {
+    // basically just CONTAINING_RECORD(current, ldr_entry, InMemoryOrderLinks)
+    auto const entry = read<ldr_entry>(cast_ptr(
+      current - offsetof(ldr_entry, InMemoryOrderLinks)));
+
+    // create a std::wstring object big enough to hold the dll name
+    std::wstring fullpath(entry.FullDllName.Length / 2, L' ');
+
+    // read the full dll path
+    auto const bytes_read = read(
+      cast_ptr(entry.FullDllName.Buffer),
+      fullpath.data(),
+      entry.FullDllName.Length);
+
+    // error reading memory
+    if (bytes_read != entry.FullDllName.Length) {
+      FRONG_DEBUG_WARNING("Failed to read module's FullDllName.");
+      continue;
+    }
+
+    // process this module
+    if (!callback(frg::module{
+        std::move(fullpath),
+        cast_ptr(entry.DllBase) }))
+      break;
+
+    // go to the next node
+    current = read<list_entry>(cast_ptr(current)).Flink;
+  }
 }
 
 } // namespace frg

@@ -6,3 +6,5 @@ namespace frg {
 }
 
 #include "frong/process.h"
+#include "frong/module.h"
+#include "frong/memscan.h"

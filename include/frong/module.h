@@ -1,19 +1,47 @@
 #pragma once
 
+#include "process.h"
+#include "debug.h"
+#include "nt.h"
+
 #include <string>
 
 
 namespace frg {
 
-using module_base = void*;
+// return the address of a module's IMAGE_NT_HEADER
+void* ntheader(process const& proc, module_base const base);
 
-// represents a module loaded in memory
-struct module {
-  // full path to the DLL
-  std::wstring path;
+// the size of an image
+template <size_t PtrSize>
+size_t module_size(process const& proc, module_base const base);
 
-  // base address of the image in memory
-  module_base base = nullptr;
-};
+
+//
+//
+// implementation below
+//
+//
+
+
+// return the address of a module's IMAGE_NT_HEADER
+inline void* ntheader(process const& proc, module_base const base) {
+  FRONG_ASSERT(proc.valid());
+  FRONG_ASSERT(base != nullptr);
+  
+  // base + IMAGE_DOS_HEADER::e_lfanew
+  return (uint8_t*)base + proc.read<uint32_t>(
+    (uint8_t*)base + offsetof(IMAGE_DOS_HEADER, e_lfanew));
+}
+
+// the size of an image
+template <size_t PtrSize>
+inline size_t module_size(process const& proc, module_base const base) {
+  using nt_header = std::conditional_t<PtrSize == 8, IMAGE_NT_HEADERS64, IMAGE_NT_HEADERS32>;
+
+  // read the nt header
+  auto const nth = proc.read<nt_header>(ntheader(proc, base));
+  return nth.OptionalHeader.SizeOfImage;
+}
 
 } // namespace frg
