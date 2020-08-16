@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <optional>
+#include <memory>
 
 // for WTS* functions
 #include <WtsApi32.h>
@@ -17,15 +18,59 @@
 
 namespace frg {
 
-using module_base = void*;
+struct module_export {
+  std::string name;
+  void* address;
+  uint16_t ordinal;
+};
 
 // represents a module loaded in memory
-struct module {
-  // full path to the DLL
-  std::wstring path;
+class module {
+public:
+  module() = default;
+  module(void* base, class process const& proc);
 
-  // base address of the image in memory
-  module_base base = nullptr;
+  // the base address of the module in memory
+  void* base() const;
+
+  // the size of the module
+  size_t size() const;
+
+  // name of the module
+  std::wstring name(class process const& proc) const;
+
+  // 32 or 64 bit
+  // note:
+  //   32 bit programs running under wow64 will still have 64bit modules loaded
+  //   in memory, e.g. ntdll
+  bool x86() const;
+  bool x64() const;
+
+  // get all of the module's exports
+  template <typename OutIt>
+  size_t exports(class process const& proc, OutIt dest) const;
+
+  // returns a vector of exports
+  std::vector<module_export> exports(class process const& proc) const;
+
+  // get the address of an export
+  void* get_proc_addr(class process const& proc, char const* name) const;
+
+private:
+  void* base_ = nullptr;
+  size_t size_ = 0;
+  bool x64_ = false;
+
+private:
+  // the address of the IMAGE_NT_HEADERS
+  uint8_t* ntheader(class process const& proc) const;
+
+  // iterate over every export in a loaded module
+  template <size_t PtrSize, typename Callback>
+  void iterate_exports(class process const& proc, Callback&& callback) const;
+
+  // finds a forwarder export
+  void* resolve_forwarder(class process const& proc, std::wstring_view parent, std::string_view forwarder) const;
 };
 
 // wrapper over a process handle
@@ -76,10 +121,10 @@ public:
 
   // get a single module
   template <size_t PtrSize>
-  std::optional<frg::module> module(std::wstring_view name) const;
+  std::optional<frg::module> module(std::wstring_view name, std::wstring_view parent = L"") const;
 
   // calls module() with PtrSize set to 4 if x86() or 8 if x64()
-  std::optional<frg::module> module(std::wstring_view name) const;
+  std::optional<frg::module> module(std::wstring_view name, std::wstring_view parent = L"") const;
 
   // get a list of loaded modules
   template <size_t PtrSize, typename OutIt>
@@ -91,10 +136,17 @@ public:
 
   // returns an std::vector of loaded modules
   template <size_t PtrSize>
-  std::vector<frg::module> modules() const;
+  std::vector<std::pair<std::wstring, frg::module>> modules() const;
 
   // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
-  std::vector<frg::module> modules() const;
+  std::vector<std::pair<std::wstring, frg::module>> modules() const;
+
+  // external GetProcAddress()
+  template <size_t PtrSize>
+  void* get_proc_addr(std::wstring_view mod_name, char const* name) const;
+
+  // calls get_proc_addr() with PtrSize set to 4 if x86() or 8 if x64()
+  void* get_proc_addr(std::wstring_view mod_name, char const* name) const;
 
   // read/write memory (returns the number of bytes read/written)
   size_t read(void const* address, void* buffer, size_t size) const;
@@ -119,10 +171,9 @@ private:
   // the process id
   uint32_t pid_ = 0;
 
-  // address of the native peb 
-  // eg. 64bit peb if called from a 64bit process
-  //     32bit peb if called from a 32bit process
-  void* peb_address_ = nullptr;
+  // process env block
+  void* peb32_address_ = nullptr,
+    *peb64_address_ = nullptr;
 
   // should we close the handle ourselves?
   bool close_handle_ = false;
@@ -144,21 +195,31 @@ private:
   // call callback() for every module loaded
   template <size_t PtrSize, typename Callback>
   void iterate_modules(Callback&& callback) const;
+
+  // is this an api set schema dll?
+  static bool is_api_set_schema(std::wstring_view name);
+
+  // resolve an api stub dll to it's real dll
+  static std::wstring resolve_api_name(std::wstring_view name, std::wstring_view parent = L"");
+
+  // if constexpr is so fucking shit pls fix
+  template <size_t PtrSize>
+  static nt::API_SET_NAMESPACE* get_api_set_map();
 };
 
 // get the pids that have the target process name
 template <typename OutIt>
-size_t pids_from_name(std::string_view name, OutIt dest);
+size_t pids_from_name(std::wstring_view name, OutIt dest);
 
 // returns a vector of pids
-std::vector<uint32_t> pids_from_name(std::string_view name);
+std::vector<uint32_t> pids_from_name(std::wstring_view name);
 
 // get a process with it's name
 // note: an invalid process will be returned if 0 or more
 //       than 1 processes are found with a matching name
 // if force is true, it will return the first process found
 // when multiple processes match the provided name
-process process_from_name(std::string_view name, bool force = false);
+process process_from_name(std::wstring_view name, bool force = false);
 
 
 //
@@ -170,12 +231,12 @@ process process_from_name(std::string_view name, bool force = false);
 
 // get the pids that have the target process name
 template <typename OutIt>
-inline size_t pids_from_name(std::string_view const name, OutIt dest) {
+inline size_t pids_from_name(std::wstring_view const name, OutIt dest) {
   DWORD count = 0;
-  PWTS_PROCESS_INFOA processes = nullptr;
+  PWTS_PROCESS_INFOW processes = nullptr;
 
   // query every active process
-  if (!WTSEnumerateProcessesA(WTS_CURRENT_SERVER_HANDLE, 0, 1, &processes, &count)) {
+  if (!WTSEnumerateProcessesW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &processes, &count)) {
     FRONG_DEBUG_ERROR("Call to WTSEnumerateProcessesA failed.");
     return 0;
   }
@@ -185,7 +246,7 @@ inline size_t pids_from_name(std::string_view const name, OutIt dest) {
 
   for (size_t i = 0; i < count; ++i) {
     // names dont match, continue!
-    if (!name.empty() && 0 != strncmp(processes[i].pProcessName, name.data(), name.size()))
+    if (!name.empty() && 0 != _wcsncoll(processes[i].pProcessName, name.data(), name.size()))
       continue;
 
     (matching++, dest++) = processes[i].ProcessId;
@@ -196,7 +257,7 @@ inline size_t pids_from_name(std::string_view const name, OutIt dest) {
 }
 
 // returns a vector of pids
-inline std::vector<uint32_t> pids_from_name(std::string_view const name) {
+inline std::vector<uint32_t> pids_from_name(std::wstring_view const name) {
   std::vector<uint32_t> pids;
   pids_from_name(name, back_inserter(pids));
   return pids;
@@ -207,24 +268,245 @@ inline std::vector<uint32_t> pids_from_name(std::string_view const name) {
 //       than 1 processes are found with a matching name
 // if force is true, it will return the first process found
 // when multiple processes match the provided name
-inline process process_from_name(std::string_view const name, bool const force) {
+inline process process_from_name(std::wstring_view const name, bool const force) {
   auto const pids = pids_from_name(name);
   
   // process not found
   if (pids.empty()) {
-    FRONG_DEBUG_WARNING("No processes found with the name \"%.*s\"", 
+    FRONG_DEBUG_WARNING("No processes found with the name \"%.*ws\"", 
       (int)name.size(), name.data());
     return {};
   }
 
   // nore than one matching process found
   if (pids.size() > 1 && !force) {
-    FRONG_DEBUG_WARNING("Multiple processes found with the name \"%.*s\"",
+    FRONG_DEBUG_WARNING("Multiple processes found with the name \"%.*ws\"",
       (int)name.size(), name.data());
     return {};
   }
 
   return process(pids.front());
+}
+
+// constructor
+module::module(void* base, process const& proc) : base_(base) {
+  auto const nth = ntheader(proc);
+
+  // image size
+  size_ = proc.read<uint32_t>(nth +
+    offsetof(IMAGE_NT_HEADERS, OptionalHeader) +
+    offsetof(IMAGE_OPTIONAL_HEADER, SizeOfImage));
+
+  // 64 or 32 bit
+  x64_ = IMAGE_FILE_MACHINE_AMD64 ==
+    proc.read<uint16_t>(nth +
+    offsetof(IMAGE_NT_HEADERS, FileHeader) +
+    offsetof(IMAGE_FILE_HEADER, Machine));
+}
+
+// the base address of the module in memory
+inline void* module::base() const {
+  return base_;
+}
+
+// the size of the module
+inline size_t module::size() const {
+  return size_;
+}
+
+// name of the module
+inline std::wstring module::name(process const& proc) const {
+  // cancer cuz im sick of templates
+  auto const dir = proc.read<IMAGE_DATA_DIRECTORY>(cast_ptr(ntheader(proc) + 
+    offsetof(IMAGE_NT_HEADERS, OptionalHeader) + (x64() ?
+    offsetof(IMAGE_OPTIONAL_HEADER64, DataDirectory) : 
+    offsetof(IMAGE_OPTIONAL_HEADER32, DataDirectory))));
+
+  if (!dir.VirtualAddress) {
+    FRONG_DEBUG_WARNING("Module has no export directory: 0x%p", base_);
+    return L"";
+  }
+
+  auto const data = proc.read<IMAGE_EXPORT_DIRECTORY>((uint8_t*)base_ + dir.VirtualAddress);
+
+  if (!data.Name) {
+    FRONG_DEBUG_WARNING("Module has no export name: 0x%p", base_);
+    return L"";
+  }
+
+  char buffer[256] = { 0 };
+  proc.read((uint8_t*)base_ + data.Name, buffer, sizeof(buffer) - 1);
+
+  // convert to wstring for convenience
+  return std::wstring(std::begin(buffer), std::begin(buffer) + strlen(buffer));
+}
+
+// 32 or 64 bit
+inline bool module::x86() const {
+  return !x64_;
+}
+inline bool module::x64() const {
+  return x64_;
+}
+
+// get all of the module's exports
+template <typename OutIt>
+inline size_t module::exports(process const& proc, OutIt dest) const {
+  size_t count = 0;
+
+  // name of this module, for resolving forwarded exports
+  auto const module_name = name(proc);
+
+  auto const callback = [&](char const* name, 
+      uint16_t ordinal, void* address, char const* forwarder) {
+
+    if (forwarder)
+      address = resolve_forwarder(proc, module_name, forwarder);
+
+    (count++, dest++) = module_export{
+      name,
+      address,
+      ordinal
+    };
+
+    return true;
+  };
+
+  x86() ?
+    iterate_exports<4>(proc, callback) :
+    iterate_exports<8>(proc, callback);
+
+  return count;
+}
+
+// returns a vector of exports
+inline std::vector<module_export> module::exports(process const& proc) const {
+  std::vector<module_export> vec;
+  exports(proc, back_inserter(vec));
+  return vec;
+}
+
+// get the address of an export
+inline void* module::get_proc_addr(process const& proc, char const* name) const {
+  void* proc_addr = nullptr;
+
+  // search for matching export
+  auto const callback = [&](char const* routine, 
+      uint16_t ordinal, void* address, char const* forwarder) {
+    if (((uintptr_t)name & ~0xFFFF) == 0) {
+      // search by ordinal
+      if (name != (void*)ordinal)
+        return true;
+    } else {
+      // search by name
+      if (strcmp(routine, name))
+        return true;
+    }
+
+    proc_addr = forwarder ? resolve_forwarder(
+      proc, this->name(proc), forwarder) : address;
+
+    return false;
+  };
+
+  x86() ?
+    iterate_exports<4>(proc, callback) :
+    iterate_exports<8>(proc, callback);
+
+  return proc_addr;
+}
+
+// the address of the IMAGE_NT_HEADERS
+inline uint8_t* module::ntheader(process const& proc) const {
+  FRONG_ASSERT(base_ != nullptr);
+
+  // base + IMAGE_DOS_HEADER::e_lfanew
+  return (uint8_t*)base_ + proc.read<uint32_t>(
+    (uint8_t*)base_ + offsetof(IMAGE_DOS_HEADER, e_lfanew));
+}
+
+// iterate over every export in a loaded module
+template <size_t PtrSize, typename Callback>
+inline void module::iterate_exports(process const& proc, Callback&& callback) const {
+  // read the nt header
+  auto const nth = proc.read<std::conditional_t<PtrSize == 8,
+    IMAGE_NT_HEADERS64, IMAGE_NT_HEADERS32>>(ntheader(proc));
+
+  auto const export_data = nth.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+
+  // cmon bruh
+  if (export_data.Size <= 0)
+    return;
+
+  auto const export_buffer = std::make_unique<uint8_t[]>(export_data.Size);
+
+  // read everything at once for huge performance gains
+  proc.read((uint8_t*)base_ + export_data.VirtualAddress, 
+    export_buffer.get(), export_data.Size);
+
+  auto const export_dir = (PIMAGE_EXPORT_DIRECTORY)export_buffer.get();
+
+  // parallel arrays
+  auto const ordinals = (uint16_t*)(&export_buffer[
+    export_dir->AddressOfNameOrdinals - export_data.VirtualAddress]);
+  auto const name_rvas = (uint32_t*)(&export_buffer[
+    export_dir->AddressOfNames - export_data.VirtualAddress]);
+  auto const function_rvas = (uint32_t*)(&export_buffer[
+    export_dir->AddressOfFunctions - export_data.VirtualAddress]);
+
+  // iterate over every export
+  for (size_t i = 0; i < export_dir->NumberOfNames; ++i) {
+    // the exported function's name
+    auto const name = (char const*)(
+      &export_buffer[name_rvas[i] - export_data.VirtualAddress]);
+
+    // the index into the address array
+    auto const ordinal = ordinals[i];
+
+    // rva to the exported function
+    auto const func_rva = function_rvas[ordinal];
+
+    // does func_rva point to an import name instead
+    auto const is_forwarder = func_rva >= export_data.VirtualAddress &&
+      func_rva < export_data.VirtualAddress + export_data.Size;
+
+    // the string in our memory space
+    auto const forwarder_name = is_forwarder ? (char const*)&export_buffer[
+      func_rva - export_data.VirtualAddress] : nullptr;
+
+    // call the callback
+    if (!callback(name, (uint16_t)export_dir->Base +
+        ordinal, (uint8_t*)base_ + func_rva, forwarder_name))
+      break;
+  }
+}
+
+// finds a forwarder export
+inline void* module::resolve_forwarder(process const& proc, 
+    std::wstring_view parent, std::string_view forwarder) const {
+  auto const split = forwarder.find_first_of('.');
+  
+  // the name of the module (without the .dll extension)
+  std::wstring module_name(begin(forwarder), begin(forwarder) + split);
+  module_name += L".dll";
+  
+  // the name of the import
+  auto const import_name = forwarder.data() + split + 1;
+
+  auto const mod = x86() ? 
+    proc.module<4>(module_name, parent) :
+    proc.module<8>(module_name, parent);
+
+  // rip
+  if (!mod)
+    return nullptr;
+
+  if (import_name[0] == '#')
+    // resolve by ordinal
+    return mod->get_proc_addr(proc, (char const*)(uintptr_t)atoi(import_name + 1));
+
+  // resolve by name
+  return mod->get_proc_addr(proc, import_name);
 }
 
 // this is explicitly not explicit:
@@ -243,11 +525,16 @@ inline process::process(uint32_t const pid) {
     PROCESS_VM_WRITE |
     PROCESS_QUERY_LIMITED_INFORMATION;
 
-  if (handle_ = OpenProcess(access, FALSE, pid)) {
-    close_handle_ = true;
-    initialize();
-  } else
+  handle_ = OpenProcess(access, FALSE, pid);
+
+  // rip
+  if (!handle_) {
     FRONG_DEBUG_ERROR("Failed to open process with pid %u", pid);
+    return;
+  }
+
+  close_handle_ = true;
+  initialize();
 }
 
 // we cant copy but we can move
@@ -257,12 +544,13 @@ inline process::process(process&& other) noexcept {
 inline process& process::operator=(process&& other) noexcept {
   // we can just swap all our instance variables since other's destructor
   // will cleanup our (old) process instance for us :)
-  std::swap(handle_,       other.handle_);
-  std::swap(pid_,          other.pid_);
-  std::swap(peb_address_,  other.peb_address_);
-  std::swap(close_handle_, other.close_handle_);
-  std::swap(x64_,          other.x64_);
-  std::swap(wow64_,        other.wow64_);
+  std::swap(handle_,        other.handle_);
+  std::swap(pid_,           other.pid_);
+  std::swap(peb32_address_, other.peb32_address_);
+  std::swap(peb64_address_, other.peb64_address_);
+  std::swap(close_handle_,  other.close_handle_);
+  std::swap(x64_,           other.x64_);
+  std::swap(wow64_,         other.wow64_);
 
   return *this;
 }
@@ -283,29 +571,24 @@ inline process::operator bool() const noexcept {
 
 // 32 or 64 bit code
 inline bool process::x86() const noexcept {
-  FRONG_ASSERT(valid());
   return !x64_;
 }
 inline bool process::x64() const noexcept {
-  FRONG_ASSERT(valid());
   return x64_;
 }
 
 // is this process running under wow64?
 inline bool process::wow64() const noexcept {
-  FRONG_ASSERT(valid());
   return wow64_;
 }
 
 // return the underlying handle
 inline HANDLE process::handle() const noexcept {
-  FRONG_ASSERT(valid());
   return handle_; 
 }
 
 // get the process's pid
 inline uint32_t process::pid() const noexcept {
-  FRONG_ASSERT(valid());
   return pid_;
 }
 
@@ -314,21 +597,12 @@ template <size_t PtrSize>
 inline void* process::peb_addr() const noexcept {
   FRONG_ASSERT(PtrSize == 4 || PtrSize == 8);
 
-  // peb_address_ is 64bit
-  if constexpr (sizeof(void*) == 8) {
-    if constexpr (PtrSize == 8)
-      return peb_address_;
-    else {
-      // only a wow64 process will have a 32bit peb
-      FRONG_ASSERT(wow64());
-      return (uint8_t*)peb_address_ + 0x1000;
-    }
-  } 
-  // peb_address_ is 32bit
-  else {
-    // currently doesn't support getting the 64bit peb from a 32bit process
-    FRONG_ASSERT(PtrSize == 4);
-    return peb_address_;
+  if constexpr (PtrSize == 8) {
+    FRONG_ASSERT(sizeof(void*) == 8);
+    return peb64_address_;
+  } else {
+    FRONG_ASSERT(x86());
+    return peb32_address_;
   }
 }
 
@@ -340,61 +614,77 @@ inline auto process::peb() const {
 
 // get a single module
 template <size_t PtrSize>
-inline std::optional<frg::module> process::module(std::wstring_view const name) const {
-  // bruh -_-
-  if (name.empty())
-    return {};
+inline std::optional<frg::module> process::module(
+    std::wstring_view name, std::wstring_view const parent) const {
+  FRONG_ASSERT(!name.empty());
 
-  struct {
-    std::wstring_view const name;
-    std::optional<frg::module> found;
+  std::wstring real_name(name);
 
-    // search for a matching module
-    bool operator()(frg::module&& m) {
-      // not big enough
-      if (m.path.size() < name.size())
-        return true;
+  // api redirection
+  if (is_api_set_schema(name))
+    real_name = resolve_api_name(name, parent);
 
-      // cut off the beginning part
-      auto const n = m.path.c_str() + (m.path.size() - name.size());
+  std::optional<frg::module> found_module = {};
 
-      // does the name match?
-      if (0 == _wcsnicmp(n, name.data(), name.size())) {
-        found = m;
-        return false;
-      }
-
+  iterate_modules<PtrSize>([&](std::wstring&& path, void* base) {
+    // not big enough
+    if (path.size() < real_name.size())
       return true;
-    }
-  } callback{ name };
 
-  iterate_modules<PtrSize>(callback);
-  return callback.found;
+    auto const bslash = path.find_last_of(L'\\');
+    auto const fslash = path.find_last_of(L'/');
+
+    auto n = std::wstring_view(path);
+
+    // we only want the name
+    if (bslash != n.npos || fslash != n.npos) {
+      if (bslash != n.npos && fslash != n.npos)
+        n = n.substr(max(fslash, bslash) + 1);
+      else if (fslash != n.npos)
+        n = n.substr(fslash + 1);
+      else
+        n = n.substr(bslash + 1);
+    }
+
+    if (n.size() != real_name.size())
+      return true;
+
+    // does the name match?
+    if (0 == _wcsnicmp(n.data(), real_name.data(), real_name.size())) {
+      found_module = frg::module(base, *this);
+      return false;
+    }
+
+    return true;
+  });
+
+  // rip
+  if (!found_module) {
+    FRONG_DEBUG_WARNING("Failed to find module: %.*ws", 
+      (int)name.size(), name.data());
+  }
+
+  return found_module;
 }
 
 // calls module() with PtrSize set to 4 if x86() or 8 if x64()
-inline std::optional<frg::module> process::module(std::wstring_view const name) const {
-  return x64() ? module<8>(name) : module<4>(name);
+inline std::optional<frg::module> process::module(
+    std::wstring_view const name, std::wstring_view const parent) const {
+  return x64() ? module<8>(name, parent) : module<4>(name, parent);
 }
 
 // get a list of loaded modules
 template <size_t PtrSize, typename OutIt>
 inline size_t process::modules(OutIt dest) const {
-  struct {
-    OutIt dest;
-    size_t count;
-
-    // add every module
-    bool operator()(frg::module&& m) {
-      (count++, dest++) = m;
-      return true;
-    }
-  } callback{ dest, 0 };
+  size_t count = 0;
 
   // iterate over every module and add it to the list
-  iterate_modules<PtrSize>(callback);
+  iterate_modules<PtrSize>([&](std::wstring&& path, void* base) {
+    (count++, dest++) = std::pair(std::move(path), frg::module(base, *this));
+    return true;
+  });
 
-  return callback.count;
+  return count;
 }
 
 // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
@@ -405,20 +695,43 @@ inline size_t process::modules(OutIt dest) const {
 
 // returns an std::vector of loaded modules
 template <size_t PtrSize>
-inline std::vector<frg::module> process::modules() const {
-  std::vector<frg::module> m;
-  modules(back_inserter(m));
+inline std::vector<std::pair<std::wstring, 
+    frg::module>> process::modules() const {
+  std::vector<std::pair<std::wstring, frg::module>> m;
+  modules<PtrSize>(back_inserter(m));
   return m;
 }
 
 // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
-inline std::vector<frg::module> process::modules() const {
+inline std::vector<std::pair<std::wstring, 
+    frg::module>> process::modules() const {
   return x64() ? modules<8>() : modules<4>();
 }
 
+// external GetProcAddress()
+template <size_t PtrSize>
+inline void* process::get_proc_addr(std::wstring_view mod_name, char const* name) const {
+  auto const mod = module(mod_name);
+
+  if (!mod) {
+    FRONG_DEBUG_WARNING("Failed to find module: %.*ws", 
+      (int)mod_name.size(), mod_name.data());
+    return nullptr;
+  }
+
+  return mod->get_proc_addr(*this, name);
+}
+
+// calls get_proc_addr() with PtrSize set to 4 if x86() or 8 if x64()
+inline void* process::get_proc_addr(std::wstring_view mod_name, char const* name) const {
+  return x86() ? 
+    get_proc_addr<4>(mod_name, name) : 
+    get_proc_addr<8>(mod_name, name);
+}
+
 // read/write memory (returns the number of bytes read/written)
-inline size_t process::read(void const* const address, void* const buffer, size_t const size) const {
-  FRONG_ASSERT(valid());
+inline size_t process::read(void const* const address, 
+    void* const buffer, size_t const size) const {
   FRONG_ASSERT(size > 0);
   FRONG_ASSERT(buffer != nullptr);
   FRONG_ASSERT(address != nullptr);
@@ -432,8 +745,8 @@ inline size_t process::read(void const* const address, void* const buffer, size_
 
   return bytes_read;
 }
-inline size_t process::write(void* const address, void const* const buffer, size_t const size) const {
-  FRONG_ASSERT(valid());
+inline size_t process::write(void* const address, 
+    void const* const buffer, size_t const size) const {
   FRONG_ASSERT(size > 0);
   FRONG_ASSERT(buffer != nullptr);
   FRONG_ASSERT(address != nullptr);
@@ -469,9 +782,6 @@ inline size_t process::write(void* address, T const& value) const {
 
 // cache some stuff
 inline void process::initialize() {
-  FRONG_ASSERT(valid());
-  FRONG_ASSERT(sizeof(void*) == 8 || !x64());
-
   pid_ = GetProcessId(handle_);
 
   // is this process running under wow64?
@@ -491,21 +801,33 @@ inline void process::initialize() {
     x64_ = (info.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64);
   }
 
+  // dont "attach" to a 64-bit process from a 32-bit process
+  FRONG_ASSERT(sizeof(void*) == 8 || !x64());
+
   PROCESS_BASIC_INFORMATION info{};
 
-  // get the address of the process's peb
-  if (NT_SUCCESS(nt::NtQueryInformationProcess(handle_,
+  // for the peb
+  if (NT_ERROR(nt::NtQueryInformationProcess(handle_,
       ProcessBasicInformation, &info, sizeof(info), nullptr)))
-    peb_address_ = info.PebBaseAddress;
-  else
-    FRONG_DEBUG_WARNING("Failed to query basic process information.");
+    FRONG_DEBUG_ERROR("Failed to query basic process information.");
+
+  if constexpr (sizeof(void*) == 8) {
+    peb64_address_ = info.PebBaseAddress;
+
+    if (wow64_) {
+      // get the 32bit peb as well
+      if (NT_ERROR(nt::NtQueryInformationProcess(handle_,
+          ProcessWow64Information, &peb32_address_, sizeof(peb32_address_), nullptr)))
+        FRONG_DEBUG_ERROR("Failed to query wow64 information.");
+    }
+  } else {
+    peb32_address_ = info.PebBaseAddress;
+  }
 }
 
 // call callback() for every module loaded
 template <size_t PtrSize, typename Callback>
 inline void process::iterate_modules(Callback&& callback) const {
-  FRONG_ASSERT(valid());
-
   using ldr_data = nt::PEB_LDR_DATA<PtrSize>;
   using ldr_entry = nt::LDR_DATA_TABLE_ENTRY<PtrSize>;
   using list_entry = nt::LIST_ENTRY<PtrSize>;
@@ -539,13 +861,105 @@ inline void process::iterate_modules(Callback&& callback) const {
     }
 
     // process this module
-    if (!callback(frg::module{
-        std::move(fullpath),
-        cast_ptr(entry.DllBase) }))
+    if (!callback(std::move(fullpath), cast_ptr(entry.DllBase)))
       break;
 
     // go to the next node
     current = read<list_entry>(cast_ptr(current)).Flink;
+  }
+}
+
+// is this an api set schema dll?
+inline bool process::is_api_set_schema(std::wstring_view const name) {
+  // cmon bruh
+  if (name.size() < 4)
+    return false;
+
+  return (0 == _wcsnicmp(name.data(), L"api-", 4)) ||
+    (0 == _wcsnicmp(name.data(), L"ext-", 4));
+}
+
+// resolve an api stub dll to it's real dll
+inline std::wstring process::resolve_api_name(std::wstring_view name, std::wstring_view parent) {
+  FRONG_ASSERT(is_api_set_schema(name));
+
+  // remove everything past the last version number
+  // e.g. api-ms-win-core-apiquery-l1-1-0.dll -> api-ms-win-core-apiquery-l1-1
+  if (auto const end = name.find_last_of(L'-'); end != name.npos)
+    name = name.substr(0, end);
+
+  // should be the same for every process
+  auto const map = get_api_set_map<sizeof(void*)>();
+  FRONG_ASSERT(map->Version == 6);
+
+  auto const entries = (nt::API_SET_NAMESPACE_ENTRY*)(
+    (uint8_t*)map + map->EntryOffset);
+
+  for (size_t i = 0; i < map->Count; ++i) {
+    auto const& entry = entries[i];
+
+    // cmon bruh
+    if (entry.ValueCount <= 0)
+      continue;
+
+    // prob not null terminated idfk
+    auto const entry_name = (wchar_t*)((uint8_t*)map + entry.NameOffset);
+    size_t name_size = entry.NameLength / 2;
+
+    // find the real size
+    for (size_t j = 0; j < name_size; ++j) {
+      if (entry_name[name_size - j - 1] != L'-')
+        continue;
+
+      name_size = name_size - j - 1;
+      break;
+    }
+
+    // name doesn't match
+    if (name.size() != name_size || _wcsnicmp(entry_name, name.data(), name.size()))
+      continue;
+
+    auto const values = (nt::API_SET_VALUE_ENTRY*)(
+      (uint8_t*)map + entry.ValueOffset);
+
+    // default host
+    auto value = &values[0];
+
+    // maybe we don't want the default host
+    if (entry.ValueCount > 1 && !parent.empty()) {
+      // search for matching parents
+      for (size_t j = 1; j < entry.ValueCount; ++j) {
+        std::wstring_view const pname((wchar_t const*)((uint8_t*)map + 
+          values[j].NameOffset), values[j].NameLength / 2);
+
+        // name doesn't match
+        if (pname.size() != parent.size() || _wcsnicmp(
+            pname.data(), parent.data(), parent.size()))
+          continue;
+
+        value = &values[j];
+        break;
+      }
+    }
+
+    return std::wstring((wchar_t*)((uint8_t*)map +
+      value->ValueOffset), value->ValueLength / 2);
+  }
+
+  FRONG_DEBUG_WARNING("Failed to resolve api: %.*ws",
+    (int)name.size(), name.data());
+  return L"";
+}
+
+// if constexpr is so fucking shit pls fix
+template <size_t PtrSize>
+inline nt::API_SET_NAMESPACE* process::get_api_set_map() {
+  if constexpr (PtrSize == 8) {
+    return (nt::API_SET_NAMESPACE*)((nt::PEB<PtrSize>*)
+      __readgsqword(0x60 + PtrSize - PtrSize))->ApiSetMap;
+  } else {
+    return (nt::API_SET_NAMESPACE*)((nt::PEB<PtrSize>*)
+      __readfsdword(0x30 + PtrSize - PtrSize))->ApiSetMap;
   }
 }
 

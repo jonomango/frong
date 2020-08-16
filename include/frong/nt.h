@@ -13,6 +13,9 @@
   FRONG_ASSERT(export_func_##name != nullptr);\
   return export_func_##name(__VA_ARGS__)
 
+#pragma warning(push)
+#pragma warning(disable: 4201) // warning C4201: nonstandard extension used: nameless struct/union
+
 namespace frg::nt {
 
 template <size_t PtrSize>
@@ -51,7 +54,7 @@ public:
   UNICODE_STRING<PtrSize> FullDllName;
 private:
   uint8_t Padding4[8];
-  ptr Padding5[3];
+  ptr     Padding5[3];
 public:
   union {
     ptr Alignment1;
@@ -66,9 +69,39 @@ struct PEB_LDR_DATA {
   using ptr = ptr_from_size<PtrSize>;
 private:
   uint8_t Padding1[8];
-  ptr Padding2[3];
+  ptr     Padding2[3];
 public:
   LIST_ENTRY<PtrSize> InMemoryOrderModuleList; // LDR_DATA_TABLE_ENTRY
+};
+
+// ApiSet structs are taken from https://lucasg.github.io/2017/10/15/Api-set-resolution/
+struct API_SET_NAMESPACE {
+  ULONG Version;     // v2 on Windows 7, v4 on Windows 8.1  and v6 on Windows 10
+  ULONG Size;        // apiset map size (usually the .apiset section virtual size)
+  ULONG Flags;       // according to Geoff Chappell,  tells if the map is sealed or not.
+  ULONG Count;       // hash table entry count
+  ULONG EntryOffset; // Offset to the api set entries values
+  ULONG HashOffset;  // Offset to the api set entries hash indexes
+  ULONG HashFactor;  // multiplier to use when computing hash 
+};
+
+// Hash table value
+struct API_SET_NAMESPACE_ENTRY {
+  ULONG Flags;        // sealed flag in bit 0
+  ULONG NameOffset;   // Offset to the ApiSet library name PWCHAR (e.g. "api-ms-win-core-job-l2-1-1")
+  ULONG NameLength;   // Ignored
+  ULONG HashedLength; // Apiset library name length
+  ULONG ValueOffset;  // Offset the list of hosts library implement the apiset contract (points to API_SET_VALUE_ENTRY array)
+  ULONG ValueCount;   // Number of hosts libraries 
+};
+
+// Host Library entry
+struct API_SET_VALUE_ENTRY {
+  ULONG Flags;        // sealed flag in bit 0
+  ULONG NameOffset;   // Offset to the ApiSet library name PWCHAR (e.g. "api-ms-win-core-job-l2-1-1")
+  ULONG NameLength;   // Apiset library name length
+  ULONG ValueOffset;  // Offset to the Host library name PWCHAR (e.g. "ucrtbase.dll")
+  ULONG ValueLength;  // Host library name length
 };
 
 // process environment block
@@ -85,9 +118,17 @@ struct PEB {
       uint8_t BitField;
     };
   };
+
   ptr Mutant;
   ptr ImageBaseAddress;
   ptr Ldr; // PEB_LDR_DATA
+
+private:
+  ptr     Padding1[8];
+  uint8_t Padding2[8];
+
+public:
+  ptr ApiSetMap; // API_SET_NAMESPACE
 };
 
 // ntdll!NtQueryInformationProcess
@@ -106,3 +147,5 @@ inline NTSTATUS NTAPI NtQueryInformationProcess(
 }
 
 } // namespace frg::nt
+
+#pragma warning(pop)

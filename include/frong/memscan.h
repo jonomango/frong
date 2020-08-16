@@ -1,10 +1,8 @@
 #pragma once
 
-#include "debug.h"
 #include "nt.h"
-
+#include "debug.h"
 #include "process.h"
-#include "module.h"
 
 #include <array>
 #include <vector>
@@ -43,21 +41,24 @@ private:
 template <size_t Size>
 class pattern {
 public:
-  constexpr pattern(char const (&string)[Size])
-    : string_(build(string, std::make_index_sequence<Size - 1>{})) {}
+  // construct a pattern from an ida style sig
+  constexpr pattern(char const (&ptrn)[Size]);
+
+  // parse an ascii hex character as a number
+  static constexpr uint8_t parse_hex(char letter);
 
   // does the pattern match?
-  bool operator()(void*, void* const buffer, size_t const size) const;
+  bool operator()(void*, void* const buffer, size_t size) const;
 
 private:
-  // create the std::array from the string
-  template <size_t ...indices>
-  static constexpr auto build(char const* string, std::index_sequence<indices...>) {
-    return std::array{ string[indices]... };
-  }
+  // the number of bytes in the pattern/mask
+  size_t size_ = 0;
 
-private:
-  std::array<char, Size - 1> const string_;
+  // only set bits in the mask are checked
+  std::array<bool, Size - 1> mask_;
+
+  // bytes to search for
+  std::array<uint8_t, Size - 1> pattern_;
 };
 
 // get memory regions that pass the Filter test
@@ -120,43 +121,62 @@ inline bool simple_compare<T>::operator()(void* address, void* const buffer, siz
   return *(T*)buffer == value_to_search_for;
 }
 
-// does the pattern match?
+// construct a pattern from an ida style sig
 template <size_t Size>
-inline bool pattern<Size>::operator()(void*, void* const buffer, size_t const size) const {
-  // of course this doesn't match, it's not big enough!
-  if (size < string_.size())
-    return false;
+constexpr pattern<Size>::pattern(char const (&ptrn)[Size]) {
+  size_ = 0;
 
-  for (size_t offset = 0, i = 0; i < string_.size(); ++i) {
-    // ignore spaces
-    if (string_[i] == ' ')
+  // parse the pattern
+  for (size_t i = 0; i < Size - 1; ++i) {
+    // ignore whitespace
+    if (ptrn[i] == ' ')
       continue;
 
+    size_ += 1;
+
     // wildcard
-    if (string_[i] == '?') {
-      offset += 1;
+    if (ptrn[i] == '?') {
+      mask_[size_ - 1] = false;
       continue;
     }
 
-    static auto const hex2int = [](char const c) -> unsigned {
-      if (c >= '0' && c <= '9')
-        return c - '0';
-      else if (c >= 'A' && c <= 'F')
-        return c - 'A' + 10;
-      else if (c >= 'a' && c <= 'f')
-        return c - 'a' + 10;
-      return 0;
-    };
+    // enable this byte
+    mask_[size_ - 1] = true;
 
-    // the byte value
-    auto const value = hex2int(string_[i]) << 4 | hex2int(string_[i + 1]);
+    // parse the next two letters as a byte
+    pattern_[size_ - 1] = parse_hex(ptrn[i + 1]) +
+      parse_hex(ptrn[i]) * 0x10;
 
-    // value doesn't match :(
-    if (value != ((uint8_t*)buffer)[offset])
-      return false;
-
+    // skip the next letter since we will be consuming two letters
     i += 1;
-    offset += 1;
+  }
+}
+
+// parse an ascii hex character as a number
+template <size_t Size>
+constexpr uint8_t pattern<Size>::parse_hex(char letter) {
+  if (letter >= '0' && letter <= '9')
+    return letter - '0';
+  else if (letter >= 'A' && letter <= 'F')
+    return letter - 'A' + 0xA;
+  else if (letter >= 'a' && letter <= 'f')
+    return letter - 'a' + 0xA;
+  return 0;
+}
+
+// does the pattern match?
+template <size_t Size>
+inline bool pattern<Size>::operator()(void*, void* const buffer, size_t size) const {
+  if (size < size_)
+    return false;
+
+  for (size_t i = 0; i < size_; ++i) {
+    // wildcard
+    if (!mask_[i])
+      continue;
+
+    if (pattern_[i] != *((uint8_t*)buffer + i))
+      return false;
   }
 
   return true;
@@ -211,20 +231,15 @@ template <typename Compare, typename Regions, typename OutIt,
   // ugly af but needed for the module_name overload to work properly
   std::enable_if_t<impl::valid_scan_container<Regions>>* = nullptr>
 inline size_t memscan(process const& proc, OutIt dest, Compare const& compare, Regions const& regions) {
-  // compare function that filters by biggest size
-  struct {
-    bool operator()(region const& a, region const& b) const {
-      return a.size < b.size;
-    }
-  } region_compare;
-
   // memory regions to search in
   if (regions.empty())
     return 0;
 
   // get the biggest region size
-  auto const buffer_size = max_element(
-    begin(regions), end(regions), region_compare)->size;
+  auto const buffer_size = max_element(std::begin(regions), std::end(regions), 
+      [](region const& a, region const& b) {
+    return a.size < b.size;
+  })->size;
 
   // allocate a buffer to read memory into
   auto const buffer = std::make_unique<uint8_t[]>(buffer_size);
@@ -266,7 +281,6 @@ inline std::vector<void*> memscan(process const& proc, Compare const& compare, R
 // scan memory for stuffs (only memory inside of the specified module will be scanned)
 template <typename Compare, typename OutIt>
 inline size_t memscan(process const& proc, OutIt dest, Compare const& compare, std::wstring_view const module_name) {
-  // TODO: implement...
   auto const m = proc.module(module_name);
 
   if (!m)
@@ -274,13 +288,8 @@ inline size_t memscan(process const& proc, OutIt dest, Compare const& compare, s
     return 0;
 
   std::array const regions{ region{
-    // base
-    m->base,
-
-    // size
-    proc.x64() ?
-      module_size<8>(proc, m->base) :
-      module_size<4>(proc, m->base)
+    m->base(),
+    m->size()
   } };
 
   return memscan(proc, dest, compare, regions);
