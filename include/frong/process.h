@@ -160,6 +160,12 @@ public:
   template <typename T>
   size_t write(void* address, T const& value) const;
 
+  // allocate virtual memory in the process
+  void* allocate(size_t size, uint32_t protection = PAGE_READWRITE) const;
+
+  // free memory returned from allocate()
+  void free(void* address) const;
+
 private:
   // *****
   // WARNING: any new instance variable must also be added in the move 
@@ -523,6 +529,7 @@ inline process::process(uint32_t const pid) {
   static auto constexpr access = 
     PROCESS_VM_READ  |
     PROCESS_VM_WRITE |
+    PROCESS_VM_OPERATION |
     PROCESS_QUERY_LIMITED_INFORMATION;
 
   handle_ = OpenProcess(access, FALSE, pid);
@@ -615,7 +622,7 @@ inline auto process::peb() const {
 // get a single module
 template <size_t PtrSize>
 inline std::optional<frg::module> process::module(
-    std::wstring_view name, std::wstring_view const parent) const {
+    std::wstring_view const name, std::wstring_view const parent) const {
   FRONG_ASSERT(!name.empty());
 
   std::wstring real_name(name);
@@ -710,7 +717,7 @@ inline std::vector<std::pair<std::wstring,
 
 // external GetProcAddress()
 template <size_t PtrSize>
-inline void* process::get_proc_addr(std::wstring_view mod_name, char const* name) const {
+inline void* process::get_proc_addr(std::wstring_view const mod_name, char const* const name) const {
   auto const mod = module(mod_name);
 
   if (!mod) {
@@ -723,7 +730,7 @@ inline void* process::get_proc_addr(std::wstring_view mod_name, char const* name
 }
 
 // calls get_proc_addr() with PtrSize set to 4 if x86() or 8 if x64()
-inline void* process::get_proc_addr(std::wstring_view mod_name, char const* name) const {
+inline void* process::get_proc_addr(std::wstring_view const mod_name, char const* const name) const {
   return x86() ? 
     get_proc_addr<4>(mod_name, name) : 
     get_proc_addr<8>(mod_name, name);
@@ -776,8 +783,22 @@ inline T process::read(void const* address, size_t* bytes_read) const {
 
 // wrapper for write()
 template <typename T>
-inline size_t process::write(void* address, T const& value) const {
+inline size_t process::write(void* const address, T const& value) const {
   return write(address, &value, sizeof(value));
+}
+
+// allocate virtual memory in the process
+inline void* process::allocate(size_t const size, uint32_t const protection) const {
+  FRONG_ASSERT(size > 0);
+
+  return VirtualAllocEx(handle_, nullptr, size, MEM_COMMIT | MEM_RESERVE, protection);
+}
+
+// free memory returned from allocate()
+inline void process::free(void* const address) const {
+  FRONG_ASSERT(address != nullptr);
+
+  VirtualFreeEx(handle_, address, 0, MEM_RELEASE);
 }
 
 // cache some stuff
@@ -880,7 +901,7 @@ inline bool process::is_api_set_schema(std::wstring_view const name) {
 }
 
 // resolve an api stub dll to it's real dll
-inline std::wstring process::resolve_api_name(std::wstring_view name, std::wstring_view parent) {
+inline std::wstring process::resolve_api_name(std::wstring_view name, std::wstring_view const parent) {
   FRONG_ASSERT(is_api_set_schema(name));
 
   // remove everything past the last version number

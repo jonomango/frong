@@ -59,8 +59,24 @@ for (auto const& [path, base] : process.modules()) {
 }
 
 // you can use any container that has an inserter (std::deque, std::list, etc)
-std::vector<frg::module> modules;  
+std::vector<std::pair<std::wstring, frg::module>> modules;  
 process.modules(back_inserter(modules));
+```
+
+* Functions that manipulate memory:
+
+```cpp
+// allocate 4 bytes in the target process
+auto const some_address = process.allocate(4);
+
+// write to memory
+process.write(some_address, 69);
+
+// read from memory
+printf("%i\n", process.read<int>(some_address));
+
+// cleanup our allocated memory
+process.free(some_address);
 ```
 
 * Searching memory:
