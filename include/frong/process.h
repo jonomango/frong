@@ -111,6 +111,9 @@ public:
   // get the process's pid
   uint32_t pid() const noexcept;
 
+  // get the name of the process
+  std::wstring name() const;
+
   // get the address of the peb
   template <size_t PtrSize>
   void* peb_addr() const noexcept;
@@ -597,6 +600,24 @@ inline HANDLE process::handle() const noexcept {
 // get the process's pid
 inline uint32_t process::pid() const noexcept {
   return pid_;
+}
+
+// get the name of the process
+inline std::wstring process::name() const {
+  wchar_t buffer[512] = { L'\0' };
+  unsigned long size = 512;
+
+  // query the process path
+  if (!QueryFullProcessImageNameW(handle_, 0, buffer, &size))
+    return L"";
+
+  // trim the start of the path
+  for (int i = size - 2; i >= 0; --i) {
+    if (buffer[i] == L'\\' || buffer[i] == L'/')
+      return &buffer[i + 1];
+  }
+
+  return buffer;
 }
 
 // get the address of the peb
