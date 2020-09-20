@@ -269,7 +269,7 @@ inline size_t pids_from_name(std::wstring_view const name, OutIt dest) {
 
   iterate_processes([&](wchar_t const* const n, uint32_t const pid) {
     // does the name match?
-    if (0 == _wcsncoll(n, name.data(), name.size()))
+    if (name.empty() || 0 == _wcsncoll(n, name.data(), name.size()))
       (count++, dest) = pid;
 
     return true;
