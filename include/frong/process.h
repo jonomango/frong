@@ -216,6 +216,10 @@ private:
   static nt::API_SET_NAMESPACE* get_api_set_map();
 };
 
+// iterate over every process
+template <typename Callback>
+void iterate_processes(Callback&& callback);
+
 // get the pids that have the target process name
 template <typename OutIt>
 size_t pids_from_name(std::wstring_view name, OutIt dest);
@@ -238,31 +242,40 @@ process process_from_name(std::wstring_view name, bool force = false);
 //
 
 
-// get the pids that have the target process name
-template <typename OutIt>
-inline size_t pids_from_name(std::wstring_view const name, OutIt dest) {
+// iterate over every process
+template <typename Callback>
+inline void iterate_processes(Callback&& callback) {
   DWORD count = 0;
   PWTS_PROCESS_INFOW processes = nullptr;
 
   // query every active process
   if (!WTSEnumerateProcessesW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &processes, &count)) {
     FRONG_DEBUG_ERROR("Call to WTSEnumerateProcessesA failed.");
-    return 0;
+    return;
   }
 
-  // number of matching processes
-  size_t matching = 0;
-
   for (size_t i = 0; i < count; ++i) {
-    // names dont match, continue!
-    if (!name.empty() && 0 != _wcsncoll(processes[i].pProcessName, name.data(), name.size()))
-      continue;
-
-    (matching++, dest++) = processes[i].ProcessId;
+    if (!callback(processes[i].pProcessName, processes[i].ProcessId))
+      break;
   }
 
   WTSFreeMemory(processes);
-  return matching;
+}
+
+// get the pids that have the target process name
+template <typename OutIt>
+inline size_t pids_from_name(std::wstring_view const name, OutIt dest) {
+  size_t count = 0;
+
+  iterate_processes([&](wchar_t const* const n, uint32_t const pid) {
+    // does the name match?
+    if (0 == _wcsncoll(n, name.data(), name.size()))
+      (count++, dest) = pid;
+
+    return true;
+  });
+
+  return count;
 }
 
 // returns a vector of pids
