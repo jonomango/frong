@@ -311,7 +311,7 @@ inline process process_from_name(std::wstring_view const name, bool const force)
 }
 
 // constructor
-module::module(void* base, process const& proc) : base_(base) {
+inline module::module(void* base, process const& proc) : base_(base) {
   auto const nth = ntheader(proc);
 
   // image size
