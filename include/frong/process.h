@@ -87,6 +87,13 @@ public:
   // opens a handle to a process
   explicit process(uint32_t pid);
 
+  // get a process with it's name
+  // note: an invalid process will be returned if 0 or more
+  //       than 1 processes are found with a matching name
+  // if force is true, it will return the first process found
+  // when multiple processes match the provided name
+  explicit process(std::wstring_view name, bool force = false);
+
   // we cant copy but we can move
   process(process&& other) noexcept;
   process& operator=(process&& other) noexcept;
@@ -227,13 +234,6 @@ size_t pids_from_name(std::wstring_view name, OutIt dest);
 // returns a vector of pids
 std::vector<uint32_t> pids_from_name(std::wstring_view name);
 
-// get a process with it's name
-// note: an invalid process will be returned if 0 or more
-//       than 1 processes are found with a matching name
-// if force is true, it will return the first process found
-// when multiple processes match the provided name
-process process_from_name(std::wstring_view name, bool force = false);
-
 
 //
 //
@@ -283,31 +283,6 @@ inline std::vector<uint32_t> pids_from_name(std::wstring_view const name) {
   std::vector<uint32_t> pids;
   pids_from_name(name, back_inserter(pids));
   return pids;
-}
-
-// get a process with it's name
-// note: an invalid process will be returned if 0 or more
-//       than 1 processes are found with a matching name
-// if force is true, it will return the first process found
-// when multiple processes match the provided name
-inline process process_from_name(std::wstring_view const name, bool const force) {
-  auto const pids = pids_from_name(name);
-  
-  // process not found
-  if (pids.empty()) {
-    FRONG_DEBUG_WARNING("No processes found with the name \"%.*ws\"", 
-      (int)name.size(), name.data());
-    return {};
-  }
-
-  // nore than one matching process found
-  if (pids.size() > 1 && !force) {
-    FRONG_DEBUG_WARNING("Multiple processes found with the name \"%.*ws\"",
-      (int)name.size(), name.data());
-    return {};
-  }
-
-  return process(pids.front());
 }
 
 // constructor
@@ -558,6 +533,31 @@ inline process::process(uint32_t const pid) {
 
   close_handle_ = true;
   initialize();
+}
+
+// get a process with it's name
+// note: an invalid process will be returned if 0 or more
+//       than 1 processes are found with a matching name
+// if force is true, it will return the first process found
+// when multiple processes match the provided name
+inline process::process(std::wstring_view const name, bool const force) {
+  auto const pids = pids_from_name(name);
+
+  // process not found
+  if (pids.empty()) {
+    FRONG_DEBUG_WARNING("No processes found with the name \"%.*ws\"",
+      (int)name.size(), name.data());
+    return;
+  }
+
+  // nore than one matching process found
+  if (pids.size() > 1 && !force) {
+    FRONG_DEBUG_WARNING("Multiple processes found with the name \"%.*ws\"",
+      (int)name.size(), name.data());
+    return;
+  }
+
+  *this = process(pids.front());
 }
 
 // we cant copy but we can move
