@@ -2,6 +2,7 @@
 
 #include "debug.h"
 #include "nt.h"
+#include "thread.h"
 
 #include <cstdint>
 #include <utility>
@@ -10,6 +11,7 @@
 #include <string_view>
 #include <optional>
 #include <memory>
+#include <TlHelp32.h>
 
 // for WTS* functions
 #include <WtsApi32.h>
@@ -82,7 +84,7 @@ public:
   // we want to be able to pass a HANDLE where a process is expected
   // note: handle requires atleast PROCESS_QUERY_LIMITED_INFORMATION
   //       but without PROCESS_VM_READ most functions wont work
-  process(HANDLE handle) noexcept;
+  process(HANDLE handle);
 
   // opens a handle to a process
   explicit process(uint32_t pid);
@@ -150,6 +152,13 @@ public:
 
   // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
   std::vector<std::pair<std::wstring, frg::module>> modules() const;
+
+  // get a list of threads running under the process
+  template <typename OutIt>
+  size_t threads(OutIt dest) const;
+
+  // returns an std::vector of threads
+  std::vector<thread> threads() const;
 
   // external GetProcAddress()
   template <size_t PtrSize>
@@ -510,7 +519,7 @@ inline void* module::resolve_forwarder(process const& proc,
 // we want to be able to pass a HANDLE where a process is expected
 // note: handle requires atleast PROCESS_QUERY_LIMITED_INFORMATION
 //       but without PROCESS_VM_READ most functions wont work
-inline process::process(HANDLE const handle) noexcept
+inline process::process(HANDLE const handle)
   : handle_(handle), close_handle_(false) {
   initialize();
 }
@@ -532,6 +541,7 @@ inline process::process(uint32_t const pid) {
   }
 
   close_handle_ = true;
+
   initialize();
 }
 
@@ -738,15 +748,54 @@ inline size_t process::modules(OutIt dest) const {
 template <size_t PtrSize>
 inline std::vector<std::pair<std::wstring, 
     frg::module>> process::modules() const {
-  std::vector<std::pair<std::wstring, frg::module>> m;
-  modules<PtrSize>(back_inserter(m));
-  return m;
+  std::vector<std::pair<std::wstring, frg::module>> vec;
+  modules<PtrSize>(back_inserter(vec));
+  return vec;
 }
 
 // calls modules() with PtrSize set to 4 if x86() or 8 if x64()
 inline std::vector<std::pair<std::wstring, 
     frg::module>> process::modules() const {
   return x64() ? modules<8>() : modules<4>();
+}
+
+// get a list of threads running under the process
+template <typename OutIt>
+inline size_t process::threads(OutIt dest) const {
+  size_t count = 0;
+
+  // create a snapshot of all current threads
+  const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+
+  if (snapshot == INVALID_HANDLE_VALUE) {
+    FRONG_DEBUG_WARNING("Invalid thread snapshot handle.");
+    return 0;
+  }
+
+  THREADENTRY32 entry{ sizeof(THREADENTRY32) };
+
+  // get the first thread
+  if (!Thread32First(snapshot, &entry)) {
+    FRONG_DEBUG_WARNING("Failed to get first thread entry.");
+    return 0;
+  }
+
+  // iterate through the rest of the threads
+  do {
+    if (entry.th32OwnerProcessID != pid_)
+      continue;
+
+    (count++, dest++) = thread(entry.th32ThreadID);
+  } while (Thread32Next(snapshot, &entry));
+
+  return count;
+}
+
+// returns an std::vector of threads
+inline std::vector<thread> process::threads() const {
+  std::vector<thread> vec;
+  threads(back_inserter(vec));
+  return vec;
 }
 
 // external GetProcAddress()
