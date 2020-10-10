@@ -6,6 +6,19 @@
 
 namespace frg {
 
+enum class hwbp_type {
+  execute   = 0b00,
+  write     = 0b01,
+  readwrite = 0b11
+};
+
+enum class hwbp_size {
+  one   = 0b00,
+  two   = 0b01,
+  four  = 0b11,
+  eight = 0b10
+};
+
 // represents a running thread
 class thread {
 public:
@@ -36,6 +49,10 @@ public:
 
   // this is where the thread started execution at
   void* start_address() const;
+
+  // enable or disable a debug breakpoint on the specified address
+  bool hwbp(void const* address, bool enable, hwbp_type type = 
+    hwbp_type::execute, hwbp_size size = hwbp_size::one) const;
 
 private:
   // *****
@@ -134,6 +151,68 @@ inline void* thread::start_address() const {
   }
 
   return address;
+}
+
+// enable or disable a debug breakpoint on the specified address
+inline bool thread::hwbp(void const* const address, bool const enable, 
+    hwbp_type const type, hwbp_size const size) const {
+
+  CONTEXT ctx{};
+  ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+
+  // get the current values of Dr0-Dr7
+  if (!GetThreadContext(handle_, &ctx)) {
+    FRONG_DEBUG_ERROR("Failed to get thread context.");
+    return false;
+  }
+
+  bool success = false;
+
+  if (enable) {
+    for (size_t i = 0; i < 4; ++i) {
+      // is this bp already being used
+      if (ctx.Dr7 & (size_t(1) << (i * 2)))
+        continue;
+
+      // set the address
+      (&ctx.Dr0)[i] = (uintptr_t)address;
+
+      // enable the dr7 flag
+      ctx.Dr7 |= size_t(1) << (i * 2);
+
+      // specify the breakpoint size and when should it trigger
+      const auto type_size_mask((size_t(size) << 2) | size_t(type));
+      ctx.Dr7 &= ~(0b1111 << (16 + i * 4)); // clear old value
+      ctx.Dr7 |= type_size_mask << (16 + i * 4);
+
+      success = true;
+    }
+  } else {
+    for (size_t i = 0; i < 4; ++i) {
+      // matching address?
+      if (cast_ptr((&ctx.Dr0)[i]) != address)
+        continue;
+
+      // clear the debug register
+      (&ctx.Dr0)[i] = 0;
+      
+      // disable the dr7 flag
+      ctx.Dr7 &= ~(1 << (i * 2));
+
+      // clear out the size/type as well cuz we're nice people
+      ctx.Dr7 &= ~(0b1111 << (16 + i * 4));
+
+      success = true;
+    }
+  }
+
+  // set the new debug register values
+  if (!SetThreadContext(handle_, &ctx)) {
+    FRONG_DEBUG_ERROR("Failed to set thread context.");
+    return false;
+  }
+
+  return success;
 }
 
 } // namespace frg
