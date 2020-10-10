@@ -28,8 +28,14 @@ public:
   bool valid() const noexcept;
   explicit operator bool() const noexcept;
 
+  // get the underlying handle
+  HANDLE handle() const noexcept;
+
   // get the thread id
   uint32_t tid() const noexcept;
+
+  // this is where the thread started execution at
+  void* start_address() const;
 
 private:
   // *****
@@ -104,9 +110,30 @@ inline thread::operator bool() const noexcept {
   return valid();
 }
 
+// get the underlying handle
+inline HANDLE thread::handle() const noexcept {
+  return handle_;
+}
+
 // get the thread id
 inline uint32_t thread::tid() const noexcept {
   return tid_;
+}
+
+// this is where the thread started execution at
+inline void* thread::start_address() const {
+  void* address = nullptr;
+
+  // query the address
+  auto const status = nt::NtQueryInformationThread(handle_, 
+    nt::ThreadQuerySetWin32StartAddress, &address, sizeof(address), nullptr);
+
+  if (NT_ERROR(status)) {
+    FRONG_DEBUG_WARNING("Failed to query thread's start address.");
+    return nullptr;
+  }
+
+  return address;
 }
 
 } // namespace frg

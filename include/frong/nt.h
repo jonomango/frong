@@ -18,6 +18,27 @@
 
 namespace frg::nt {
 
+enum THREADINFOCLASS {
+  ThreadBasicInformation,
+  ThreadTimes,
+  ThreadPriority,
+  ThreadBasePriority,
+  ThreadAffinityMask,
+  ThreadImpersonationToken,
+  ThreadDescriptorTableEntry,
+  ThreadEnableAlignmentFaultFixup,
+  ThreadEventPair,
+  ThreadQuerySetWin32StartAddress,
+  ThreadZeroTlsCell,
+  ThreadPerformanceCount,
+  ThreadAmILastThread,
+  ThreadIdealProcessor,
+  ThreadPriorityBoost,
+  ThreadSetTlsArrayAddress,
+  ThreadIsIoPending,
+  ThreadHideFromDebugger
+};
+
 template <size_t PtrSize>
 struct UNICODE_STRING {
   using ptr = ptr_from_size<PtrSize>;
@@ -132,7 +153,8 @@ public:
 };
 
 // ntdll!NtQueryInformationProcess
-inline NTSTATUS NTAPI NtQueryInformationProcess(
+inline NTSTATUS NTAPI 
+NtQueryInformationProcess(
     HANDLE           ProcessHandle,
     PROCESSINFOCLASS ProcessInformationClass,
     PVOID            ProcessInformation,
@@ -143,6 +165,22 @@ inline NTSTATUS NTAPI NtQueryInformationProcess(
     ProcessInformationClass,
     ProcessInformation, 
     ProcessInformationLength, 
+    ReturnLength);
+}
+
+// ntdll!NtQueryInformationThread
+inline NTSTATUS NTAPI 
+NtQueryInformationThread(
+    HANDLE          ThreadHandle, 
+    THREADINFOCLASS ThreadInformationClass,
+    PVOID           ThreadInformation, 
+    ULONG           ThreadInformationLength, 
+    PULONG          ReturnLength) {
+  FRONG_CALL_NTDLL_EXPORT(NtQueryInformationThread,
+    ThreadHandle,
+    ThreadInformationClass,
+    ThreadInformation,
+    ThreadInformationLength,
     ReturnLength);
 }
 
