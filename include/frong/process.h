@@ -26,6 +26,13 @@ struct module_export {
   uint16_t ordinal;
 };
 
+struct handle_info {
+  HANDLE handle;
+  ACCESS_MASK access;
+  uint8_t type;
+  void* object;
+};
+
 // represents a module loaded in memory
 class module {
 public:
@@ -160,6 +167,13 @@ public:
   // returns an std::vector of threads
   std::vector<thread> threads() const;
 
+  // get a list of handles that this process has open
+  template <typename OutIt>
+  size_t handles(OutIt dest) const;
+
+  // returns an std::vector of handles
+  std::vector<handle_info> handles() const;
+
   // external GetProcAddress()
   template <size_t PtrSize>
   void* get_proc_addr(std::wstring_view mod_name, char const* name) const;
@@ -232,6 +246,10 @@ private:
   static nt::API_SET_NAMESPACE* get_api_set_map();
 };
 
+// iterate over every open handle in the system
+template <typename Callback>
+void iterate_handles(Callback&& callback);
+
 // iterate over every process
 template <typename Callback>
 void iterate_processes(Callback&& callback);
@@ -250,6 +268,36 @@ std::vector<uint32_t> pids_from_name(std::wstring_view name);
 //
 //
 
+
+// iterate over every open handle in the system
+template <typename Callback>
+inline void iterate_handles(Callback&& callback) {
+  DWORD size = 0;
+  nt::SYSTEM_HANDLE_INFORMATION tmp;
+
+  // STATUS_INFO_LENGTH_MISMATCH
+  if (0xC0000004 != nt::NtQuerySystemInformation(
+    nt::SystemHandleInformation, &tmp, sizeof(tmp), &size)) {
+    FRONG_DEBUG_ERROR("Failed to query handle information.");
+    return;
+  }
+
+  auto const buffer = std::make_unique<uint8_t[]>(size + 0x1000);
+  auto const info = (nt::SYSTEM_HANDLE_INFORMATION*)buffer.get();
+
+  // query again now that we have our buffer big enough
+  auto const status = nt::NtQuerySystemInformation(
+    nt::SystemHandleInformation, buffer.get(), size + 0x1000, nullptr);
+
+  for (size_t i = 0; i < info->HandleCount; ++i) {
+    auto const& entry = info->Handles[i];
+
+    // call the callback
+    if (!callback(entry.ProcessId, handle_info{ (HANDLE)entry.Handle,
+        entry.GrantedAccess, entry.ObjectTypeNumber, entry.ObjectAddress }))
+      break;
+  }
+}
 
 // iterate over every process
 template <typename Callback>
@@ -795,6 +843,28 @@ inline size_t process::threads(OutIt dest) const {
 inline std::vector<thread> process::threads() const {
   std::vector<thread> vec;
   threads(back_inserter(vec));
+  return vec;
+}
+
+// get a list of handles that this process has open
+template <typename OutIt>
+inline size_t process::handles(OutIt dest) const {
+  size_t count = 0;
+
+  iterate_handles([&](uint32_t pid, handle_info const& info) {
+    if (pid == pid_)
+      (count++, dest++) = info;
+
+    return true;
+  });
+
+  return count;
+}
+
+// returns an std::vector of handles
+inline std::vector<handle_info> process::handles() const {
+  std::vector<handle_info> vec;
+  handles(back_inserter(vec));
   return vec;
 }
 

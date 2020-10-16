@@ -18,6 +18,10 @@
 
 namespace frg::nt {
 
+static constexpr auto SystemHandleInformation = SYSTEM_INFORMATION_CLASS(0x10);
+
+static constexpr auto ObjectNameInformation = OBJECT_INFORMATION_CLASS(1);
+
 enum THREADINFOCLASS {
   ThreadBasicInformation,
   ThreadTimes,
@@ -152,6 +156,25 @@ public:
   ptr ApiSetMap; // API_SET_NAMESPACE
 };
 
+struct SYSTEM_HANDLE_TABLE_ENTRY_INFO {
+  DWORD       ProcessId;
+  BYTE        ObjectTypeNumber;
+  BYTE        Flags;
+  WORD        Handle;
+  PVOID       ObjectAddress;
+  ACCESS_MASK GrantedAccess;
+};
+
+struct SYSTEM_HANDLE_INFORMATION {
+  DWORD                          HandleCount;
+  SYSTEM_HANDLE_TABLE_ENTRY_INFO Handles[1];
+};
+
+struct OBJECT_NAME_INFORMATION {
+  ::UNICODE_STRING Name;
+  WCHAR            NameBuffer[1];
+};
+
 // ntdll!NtQueryInformationProcess
 inline NTSTATUS NTAPI 
 NtQueryInformationProcess(
@@ -182,6 +205,36 @@ NtQueryInformationThread(
     ThreadInformation,
     ThreadInformationLength,
     ReturnLength);
+}
+
+// ntdll!NtQuerySystemInformation
+inline NTSTATUS NTAPI
+NtQuerySystemInformation(
+    SYSTEM_INFORMATION_CLASS SystemInformationClass,
+    PVOID                    SystemInformation,
+    ULONG                    SystemInformationLength,
+    PULONG                   ReturnLength) {
+  FRONG_CALL_NTDLL_EXPORT(NtQuerySystemInformation,
+    SystemInformationClass,
+    SystemInformation,
+    SystemInformationLength,
+    ReturnLength);
+}
+
+// ntdll!NtQueryObject
+inline NTSTATUS NTAPI
+NtQueryObject(
+    HANDLE                   ObjectHandle,
+    OBJECT_INFORMATION_CLASS ObjectInformationClass,
+    PVOID                    ObjectInformation,
+    ULONG                    Length,
+    PULONG                   ResultLength) {
+  FRONG_CALL_NTDLL_EXPORT(NtQueryObject,
+    ObjectHandle,
+    ObjectInformationClass,
+    ObjectInformation,
+    Length,
+    ResultLength);
 }
 
 } // namespace frg::nt
