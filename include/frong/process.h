@@ -4,13 +4,14 @@
 #include "nt.h"
 #include "thread.h"
 
+#include <vector>
+#include <memory>
+#include <string>
 #include <cstdint>
 #include <utility>
-#include <vector>
-#include <string>
-#include <string_view>
+#include <iterator>
 #include <optional>
-#include <memory>
+#include <string_view>
 #include <TlHelp32.h>
 
 // for WTS* functions
