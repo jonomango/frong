@@ -54,6 +54,12 @@ public:
   bool hwbp(void const* address, bool enable, hwbp_type type = 
     hwbp_type::execute, hwbp_size size = hwbp_size::one) const;
 
+  // suspend the current thread
+  void suspend() const;
+
+  // resume the suspended thread
+  void resume() const;
+
 private:
   // *****
   // WARNING: any new instance variable must also be added in the move 
@@ -186,6 +192,7 @@ inline bool thread::hwbp(void const* const address, bool const enable,
       ctx.Dr7 |= type_size_mask << (16 + i * 4);
 
       success = true;
+      break;
     }
   } else {
     for (size_t i = 0; i < 4; ++i) {
@@ -203,8 +210,12 @@ inline bool thread::hwbp(void const* const address, bool const enable,
       ctx.Dr7 &= ~(0b1111 << (16 + i * 4));
 
       success = true;
+      break;
     }
   }
+
+  if (!success)
+    return false;
 
   // set the new debug register values
   if (!SetThreadContext(handle_, &ctx)) {
@@ -213,6 +224,16 @@ inline bool thread::hwbp(void const* const address, bool const enable,
   }
 
   return success;
+}
+
+// suspend the current thread
+inline void thread::suspend() const {
+  SuspendThread(handle_);
+}
+
+// resume the suspended thread
+inline void thread::resume() const {
+  ResumeThread(handle_);
 }
 
 } // namespace frg

@@ -21,7 +21,7 @@ struct region {
 
 // doesn't filter any region out
 struct filter_none {
-  constexpr bool operator()(MEMORY_BASIC_INFORMATION const&) const { return true; }
+  constexpr size_t operator()(MEMORY_BASIC_INFORMATION const& info) const { return info.RegionSize; }
 };
 
 // search for a value
@@ -44,11 +44,15 @@ public:
   // construct a pattern from an ida style sig
   constexpr pattern(char const (&ptrn)[Size]);
 
+  // does the pattern match?
+  bool operator()(void*, void* buffer, size_t size) const;
+
+  // return the pattern in a pretty string
+  std::string display() const;
+
+private:
   // parse an ascii hex character as a number
   static constexpr uint8_t parse_hex(char letter);
-
-  // does the pattern match?
-  bool operator()(void*, void* const buffer, size_t size) const;
 
 private:
   // the number of bytes in the pattern/mask
@@ -106,9 +110,9 @@ static constexpr bool valid_scan_container = std::is_same_v<
 
 } // namespace impl
 
-  // look for da value
+// look for da value
 template <typename T>
-inline bool simple_compare<T>::operator()(void* address, void* const buffer, size_t const size) const {
+inline bool simple_compare<T>::operator()(void* const address, void* const buffer, size_t const size) const {
   if constexpr (alignof(T) != 1)
     // make sure address is aligned correctly
     if ((uintptr_t)address & (alignof(T) - 1))
@@ -123,7 +127,7 @@ inline bool simple_compare<T>::operator()(void* address, void* const buffer, siz
 
 // construct a pattern from an ida style sig
 template <size_t Size>
-constexpr pattern<Size>::pattern(char const (&ptrn)[Size]) {
+inline constexpr pattern<Size>::pattern(char const (&ptrn)[Size]) {
   size_ = 0;
 
   // parse the pattern
@@ -152,21 +156,9 @@ constexpr pattern<Size>::pattern(char const (&ptrn)[Size]) {
   }
 }
 
-// parse an ascii hex character as a number
-template <size_t Size>
-constexpr uint8_t pattern<Size>::parse_hex(char letter) {
-  if (letter >= '0' && letter <= '9')
-    return letter - '0';
-  else if (letter >= 'A' && letter <= 'F')
-    return letter - 'A' + 0xA;
-  else if (letter >= 'a' && letter <= 'f')
-    return letter - 'a' + 0xA;
-  return 0;
-}
-
 // does the pattern match?
 template <size_t Size>
-inline bool pattern<Size>::operator()(void*, void* const buffer, size_t size) const {
+inline bool pattern<Size>::operator()(void*, void* const buffer, size_t const size) const {
   if (size < size_)
     return false;
 
@@ -180,6 +172,41 @@ inline bool pattern<Size>::operator()(void*, void* const buffer, size_t size) co
   }
 
   return true;
+}
+
+// return the pattern in a pretty string
+template <size_t Size>
+inline std::string pattern<Size>::display() const {
+  std::string str = "";
+
+  for (size_t i = 0; i < size_; ++i) {
+    if (!str.empty())
+      str += ' ';
+
+    if (!mask_[i])
+      str += '?';
+    else {
+      str += pattern_[i] / 0x10;
+      str.back() += str.back() <= 9 ? '0' : 'A' - 10;
+
+      str += pattern_[i] % 0x10;
+      str.back() += str.back() <= 9 ? '0' : 'A' - 10;
+    }
+  }
+
+  return str;
+}
+
+// parse an ascii hex character as a number
+template <size_t Size>
+inline constexpr uint8_t pattern<Size>::parse_hex(char const letter) {
+  if (letter >= '0' && letter <= '9')
+    return letter - '0';
+  else if (letter >= 'A' && letter <= 'F')
+    return letter - 'A' + 0xA;
+  else if (letter >= 'a' && letter <= 'f')
+    return letter - 'a' + 0xA;
+  return 0;
 }
 
 // get memory regions that pass the Filter test
@@ -205,13 +232,14 @@ inline size_t regions(process const& proc, OutIt dest, Filter const& filter) {
       continue;
 
     // ignore this region
-    if (!filter(mbi))
+    auto const size = filter(mbi);
+    if (size == 0)
       continue;
 
     // add this region
     (count++, dest++) = {
       mbi.BaseAddress,
-      mbi.RegionSize
+      size
     };
   }
 
@@ -252,9 +280,10 @@ inline size_t memscan(process const& proc, OutIt dest, Compare const& compare, R
     // read
     size = proc.read(base, buffer.get(), size);
 
-    if (size == 0)
-      // error reading memory
+    if (size == 0) {
+      FRONG_DEBUG_WARNING("Failed to read memory: <%p>", base);
       continue;
+    }
 
     for (size_t offset = 0; offset < size; ++offset) {
       // does this match?
@@ -287,12 +316,16 @@ inline size_t memscan(process const& proc, OutIt dest, Compare const& compare, s
     // module not found...
     return 0;
 
-  std::array const regions{ region{
-    m->base(),
-    m->size()
-  } };
+  return memscan(proc, dest, compare, regions(proc, 
+    [&m](MEMORY_BASIC_INFORMATION const& info) -> size_t {
+    // address is not within module
+    if (info.BaseAddress < m->base() || info.BaseAddress >= (uint8_t*)m->base() + m->size())
+      return 0;
 
-  return memscan(proc, dest, compare, regions);
+    // TODO: not thoroughly tested
+    return min((uint8_t*)info.BaseAddress + info.RegionSize, 
+      (uint8_t*)m->base() + m->size()) - (uint8_t*)info.BaseAddress;
+  }));
 }
 
 // returns the results in an std::vector (only memory inside of the specified module will be scanned)

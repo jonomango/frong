@@ -893,9 +893,11 @@ inline void* process::get_proc_addr(std::wstring_view const mod_name, char const
 // read/write memory (returns the number of bytes read/written)
 inline size_t process::read(void const* const address, 
     void* const buffer, size_t const size) const {
-  FRONG_ASSERT(size > 0);
   FRONG_ASSERT(buffer != nullptr);
   FRONG_ASSERT(address != nullptr);
+
+  if (size <= 0)
+    return 0;
 
   SIZE_T bytes_read = 0;
   if (!ReadProcessMemory(handle_, address, buffer, size, &bytes_read)
@@ -908,9 +910,11 @@ inline size_t process::read(void const* const address,
 }
 inline size_t process::write(void* const address, 
     void const* const buffer, size_t const size) const {
-  FRONG_ASSERT(size > 0);
   FRONG_ASSERT(buffer != nullptr);
   FRONG_ASSERT(address != nullptr);
+
+  if (size <= 0)
+    return 0;
 
   SIZE_T bytes_written = 0;
   if (!WriteProcessMemory(handle_, address, buffer, size, &bytes_written)
