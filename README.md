@@ -42,4 +42,13 @@ auto const results = frg::memscan(process,
 // get the address of an exported routine
 auto const load_library_a = process.get_proc_addr(L"kernel32.dll", "LoadLibraryA");
 printf("LoadLibraryA: %p\n", load_library_a);
+
+// get the address of the process's native PEB (on x64 machines)
+printf("PEB64: %p\n", process.peb_addr<8>());
+
+// get the address of the process's WOW64 PEB (on x64 machines)
+printf("PEB32: %p\n", process.peb_addr<4>());
+
+// get the address of the process's kernel EPROCESS structure
+printf("EPROCESS: %p\n", process.eprocess());
 ```

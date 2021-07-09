@@ -28,6 +28,7 @@ struct module_export {
 };
 
 struct handle_info {
+  uint32_t pid;
   HANDLE handle;
   ACCESS_MASK access;
   uint8_t type;
@@ -138,6 +139,9 @@ public:
   // read the peb
   template <size_t PtrSize>
   auto peb() const;
+
+  // get the address of the kernel eprocess structure for this process
+  void* eprocess() const;
 
   // get a single module
   template <size_t PtrSize>
@@ -294,7 +298,7 @@ inline void iterate_handles(Callback&& callback) {
     auto const& entry = info->Handles[i];
 
     // call the callback
-    if (!callback(entry.ProcessId, handle_info{ (HANDLE)entry.Handle,
+    if (!callback(handle_info{ entry.ProcessId, (HANDLE)entry.Handle,
         entry.GrantedAccess, entry.ObjectTypeNumber, entry.ObjectAddress }))
       break;
   }
@@ -712,6 +716,27 @@ inline auto process::peb() const {
   return read<nt::PEB<PtrSize>>(peb_addr<PtrSize>());
 }
 
+// get the address of the kernel eprocess structure for this process
+inline void* process::eprocess() const {
+  void* address{ nullptr };
+
+  iterate_handles([&](handle_info const& info) {
+    // we only care about handles that WE own
+    if (info.pid != GetCurrentProcessId())
+      return true;
+
+    // we're searching for the open handle to the process
+    if (info.handle != handle_)
+      return true;
+
+    // we found the target handle
+    address = info.object;
+    return false;
+  });
+
+  return address;
+}
+
 // get a single module
 template <size_t PtrSize>
 inline std::optional<frg::module> process::module(
@@ -852,8 +877,8 @@ template <typename OutIt>
 inline size_t process::handles(OutIt dest) const {
   size_t count = 0;
 
-  iterate_handles([&](uint32_t pid, handle_info const& info) {
-    if (pid == pid_)
+  iterate_handles([&](handle_info const& info) {
+    if (info.pid == pid_)
       (count++, dest++) = info;
 
     return true;
