@@ -720,19 +720,32 @@ inline auto process::peb() const {
 inline void* process::eprocess() const {
   void* address{ nullptr };
 
+  // the handle we're searching for
+  auto search_handle{ handle_ };
+
+  // this wont work with pseudo handles, so we need to create a real one
+  if (handle_ == GetCurrentProcess()) {
+    DuplicateHandle(handle_, handle_, handle_, &search_handle,
+      PROCESS_QUERY_LIMITED_INFORMATION, FALSE, 0);
+  }
+
   iterate_handles([&](handle_info const& info) {
     // we only care about handles that WE own
     if (info.pid != GetCurrentProcessId())
       return true;
 
     // we're searching for the open handle to the process
-    if (info.handle != handle_)
+    if (info.handle != search_handle)
       return true;
 
     // we found the target handle
     address = info.object;
     return false;
   });
+
+  // free the handle, if we opened it
+  if (search_handle != handle_)
+    CloseHandle(search_handle);
 
   return address;
 }
