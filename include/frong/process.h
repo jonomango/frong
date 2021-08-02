@@ -573,7 +573,7 @@ inline void* module::resolve_forwarder(process const& proc,
 // note: handle requires atleast PROCESS_QUERY_LIMITED_INFORMATION
 //       but without PROCESS_VM_READ most functions wont work
 inline process::process(HANDLE const handle)
-  : handle_(handle), close_handle_(false) {
+    : handle_(handle), close_handle_(false) {
   initialize();
 }
 
@@ -718,10 +718,10 @@ inline auto process::peb() const {
 
 // get the address of the kernel eprocess structure for this process
 inline void* process::eprocess() const {
-  void* address{ nullptr };
+  void* address = nullptr;
 
   // the handle we're searching for
-  auto search_handle{ handle_ };
+  auto search_handle = handle_;
 
   // this wont work with pseudo handles, so we need to create a real one
   if (handle_ == GetCurrentProcess()) {
@@ -910,7 +910,7 @@ inline std::vector<handle_info> process::handles() const {
 // external GetProcAddress()
 template <size_t PtrSize>
 inline void* process::get_proc_addr(std::wstring_view const mod_name, char const* const name) const {
-  auto const mod = module(mod_name);
+  auto const mod = module<PtrSize>(mod_name);
 
   if (!mod) {
     FRONG_DEBUG_WARNING("Failed to find module: %.*ws", 
