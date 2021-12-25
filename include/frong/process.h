@@ -18,7 +18,6 @@
 #include <WtsApi32.h>
 #pragma comment(lib, "Wtsapi32.lib")
 
-
 namespace frg {
 
 struct module_export {
@@ -83,6 +82,12 @@ private:
   // finds a forwarder export
   void* resolve_forwarder(class process const& proc, std::wstring_view parent, std::string_view forwarder) const;
 };
+
+#ifdef FRONG_VIRTUAL_PROCESS
+#define FRONG_VIRTUAL virtual
+#else
+#define FRONG_VIRTUAL
+#endif
 
 // wrapper over a process handle
 class process {
@@ -187,8 +192,14 @@ public:
   void* get_proc_addr(std::wstring_view mod_name, char const* name) const;
 
   // read/write memory (returns the number of bytes read/written)
-  size_t read(void const* address, void* buffer, size_t size) const;
-  size_t write(void* address, void const* buffer, size_t size) const;
+  FRONG_VIRTUAL size_t read(void const* address, void* buffer, size_t size) const;
+  FRONG_VIRTUAL size_t write(void* address, void const* buffer, size_t size) const;
+
+  // allocate virtual memory in the process
+  FRONG_VIRTUAL void* allocate(size_t size, uint32_t protection) const;
+
+  // free memory returned from allocate()
+  FRONG_VIRTUAL void free(void* address) const;
 
   // wrapper for read()
   template <typename T>
@@ -198,11 +209,8 @@ public:
   template <typename T>
   size_t write(void* address, T const& value) const;
 
-  // allocate virtual memory in the process
-  void* allocate(size_t size, uint32_t protection = PAGE_READWRITE) const;
-
-  // free memory returned from allocate()
-  void free(void* address) const;
+  // allocate read/write memory in the process
+  void* allocate(size_t size) const;
 
 private:
   // *****
@@ -964,6 +972,20 @@ inline size_t process::write(void* const address,
   return bytes_written;
 }
 
+// allocate virtual memory in the process
+inline void* process::allocate(size_t const size, uint32_t const protection) const {
+  FRONG_ASSERT(size > 0);
+
+  return VirtualAllocEx(handle_, nullptr, size, MEM_COMMIT | MEM_RESERVE, protection);
+}
+
+// free memory returned from allocate()
+inline void process::free(void* const address) const {
+  FRONG_ASSERT(address != nullptr);
+
+  VirtualFreeEx(handle_, address, 0, MEM_RELEASE);
+}
+
 // wrapper for read()
 template <typename T>
 inline T process::read(void const* address, size_t* bytes_read) const {
@@ -983,18 +1005,9 @@ inline size_t process::write(void* const address, T const& value) const {
   return write(address, &value, sizeof(value));
 }
 
-// allocate virtual memory in the process
-inline void* process::allocate(size_t const size, uint32_t const protection) const {
-  FRONG_ASSERT(size > 0);
-
-  return VirtualAllocEx(handle_, nullptr, size, MEM_COMMIT | MEM_RESERVE, protection);
-}
-
-// free memory returned from allocate()
-inline void process::free(void* const address) const {
-  FRONG_ASSERT(address != nullptr);
-
-  VirtualFreeEx(handle_, address, 0, MEM_RELEASE);
+// allocate read/write memory in the process
+inline void* process::allocate(size_t const size) const {
+  return allocate(size, PAGE_READWRITE);
 }
 
 // cache some stuff
