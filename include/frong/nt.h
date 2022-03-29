@@ -235,6 +235,8 @@ static constexpr auto SystemEnclaveLaunchControlInformation = (SYSTEM_INFORMATIO
 // OBJECT_INFORMATION_CLASS
 static constexpr auto ObjectNameInformation = OBJECT_INFORMATION_CLASS(1);
 
+#pragma warning(push)
+#pragma warning(disable : 26812)
 enum THREADINFOCLASS {
   ThreadBasicInformation,
   ThreadTimes,
@@ -255,6 +257,7 @@ enum THREADINFOCLASS {
   ThreadIsIoPending,
   ThreadHideFromDebugger
 };
+#pragma warning(pop)
 
 template <size_t PtrSize>
 struct UNICODE_STRING {

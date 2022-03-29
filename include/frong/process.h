@@ -299,8 +299,11 @@ inline void iterate_handles(Callback&& callback) {
   auto const info = (nt::SYSTEM_HANDLE_INFORMATION*)buffer.get();
 
   // query again now that we have our buffer big enough
-  auto const status = nt::NtQuerySystemInformation(
-    nt::SystemHandleInformation, buffer.get(), size + 0x1000, nullptr);
+  if (!NT_SUCCESS(nt::NtQuerySystemInformation(
+    nt::SystemHandleInformation, buffer.get(), size + 0x1000, nullptr))) {
+    FRONG_DEBUG_ERROR("Failed to query handle information.");
+    return;
+  }
 
   for (size_t i = 0; i < info->HandleCount; ++i) {
     auto const& entry = info->Handles[i];
