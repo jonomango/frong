@@ -2,6 +2,7 @@
 
 #include "debug.h"
 #include "nt.h"
+#include "handles.h"
 
 
 namespace frg {
@@ -49,6 +50,9 @@ public:
 
   // this is where the thread started execution at
   void* start_address() const;
+
+  // get the address of the kernel ethread structure for this thread
+  void* ethread() const;
 
   // enable or disable a debug breakpoint on the specified address
   bool hwbp(void const* address, bool enable, hwbp_type type = 
@@ -155,6 +159,42 @@ inline void* thread::start_address() const {
     FRONG_DEBUG_WARNING("Failed to query thread's start address.");
     return nullptr;
   }
+
+  return address;
+}
+
+// get the address of the kernel ethread structure for this thread
+inline void* thread::ethread() const {
+  void* address = nullptr;
+
+  // the handle we're searching for
+  auto search_handle = handle_;
+
+  // this wont work with pseudo handles, so we need to create a real one
+  if (handle_ == GetCurrentThread()) {
+    DuplicateHandle(handle_, handle_, handle_, &search_handle,
+      PROCESS_QUERY_LIMITED_INFORMATION, FALSE, 0);
+  }
+
+  auto const current_process_id = GetCurrentProcessId();
+
+  iterate_handles([&](handle_info const& info) {
+    // we only care about handles that WE own
+    if (info.pid != current_process_id)
+      return true;
+
+    // we're searching for the open handle to the thread
+    if (info.handle != search_handle)
+      return true;
+
+    // we found the target handle
+    address = info.object;
+    return false;
+  });
+
+  // free the handle, if we opened it
+  if (search_handle != handle_)
+    CloseHandle(search_handle);
 
   return address;
 }
