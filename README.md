@@ -31,11 +31,11 @@ printf("%i\n", process.read<int>(address));
 for (auto const& [path, m] : process.modules())
   printf("0x%p %S\n", m.base(), path.c_str());
 
-// print the id and start address of every thread in the process
+// print the id, start address, and ethread address, of every thread in the process
 for (auto const& t : process.threads())
-  printf("%u 0x%p\n", t.tid(), t.start_address());
+  printf("%u 0x%p 0x%p\n", t.tid(), t.start_address(), t.ethread());
 
-// print the value and access of every handle in the process
+// print the value and access rights of every handle in the process
 for (auto const& h : process.handles())
   printf("0x%p 0x%X\n", h.handle, h.access);
 
