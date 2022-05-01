@@ -115,7 +115,7 @@ public:
   process& operator=(process&& other) noexcept;
 
   // close our handle if we were the one that opened it
-  ~process();
+  FRONG_VIRTUAL ~process();
 
   // is this process class initialized?
   bool valid() const noexcept;
